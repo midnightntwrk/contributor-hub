@@ -1,0 +1,150 @@
+name: Track Bounty PR Progress
+
+on:
+  pull_request:
+    types: [opened, edited, ready_for_review]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  track-bounty-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Link PR to bounty and update status
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const BOUNTY_LABEL = 'bounty';
+            const IN_PROGRESS_LABEL = 'in-progress';
+            const IN_REVIEW_LABEL = 'in-review';
+
+            const pr = context.payload.pull_request;
+            const prAuthor = pr.user.login;
+            const prBody = pr.body || '';
+            const prTitle = pr.title || '';
+
+            // Find linked issues from PR body
+            // Matches: fixes #123, closes #123, resolves #123, etc.
+            const issuePatterns = [
+              /(?:fix(?:es)?|close(?:s)?|resolve(?:s)?)\s*#(\d+)/gi,
+              /(?:fix(?:es)?|close(?:s)?|resolve(?:s)?)\s+(?:issue\s+)?#(\d+)/gi,
+              /#(\d+)/g  // Fallback: any issue reference
+            ];
+
+            const linkedIssueNumbers = new Set();
+            const textToSearch = `${prTitle} ${prBody}`;
+
+            for (const pattern of issuePatterns) {
+              let match;
+              while ((match = pattern.exec(textToSearch)) !== null) {
+                linkedIssueNumbers.add(parseInt(match[1]));
+              }
+            }
+
+            if (linkedIssueNumbers.size === 0) {
+              console.log('No linked issues found in PR');
+              return;
+            }
+
+            console.log(`Found linked issues: ${[...linkedIssueNumbers].join(', ')}`);
+
+            for (const issueNumber of linkedIssueNumbers) {
+              try {
+                // Get the issue
+                const { data: issue } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber
+                });
+                
+                // Check if it's a bounty issue
+                const isBounty = issue.labels.some(label => label.name === BOUNTY_LABEL);
+                if (!isBounty) {
+                  console.log(`Issue #${issueNumber} is not a bounty, skipping`);
+                  continue;
+                }
+                
+                // Check if PR author is the assignee
+                const isAssignee = issue.assignees?.some(a => a.login === prAuthor);
+                
+                const eventType = context.eventName;
+                const action = context.payload.action;
+                
+                if (eventType === 'pull_request') {
+                  if (action === 'opened') {
+                    // New PR opened for bounty
+                    const labels = [IN_PROGRESS_LABEL];
+                    
+                    // Add labels to issue
+                    await github.rest.issues.addLabels({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issueNumber,
+                      labels: labels
+                    });
+                    
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issueNumber,
+                      body: `🔗 PR #${pr.number} opened by @${prAuthor} (${pr.draft ? 'draft' : 'ready for review'})`
+                    });
+                    
+                    console.log(`Linked PR #${pr.number} to bounty issue #${issueNumber}`);
+                  } else if (action === 'ready_for_review') {
+                    // PR moved from draft to ready
+                    // Add in-review label
+                    await github.rest.issues.addLabels({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issueNumber,
+                      labels: [IN_REVIEW_LABEL]
+                    });
+                    
+                    // Remove in-progress if present
+                    try {
+                      await github.rest.issues.removeLabel({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: issueNumber,
+                        name: IN_PROGRESS_LABEL
+                      });
+                    } catch (e) {
+                      // Label might not exist, ignore
+                    }
+                    
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issueNumber,
+                      body: `👀 PR #${pr.number} is ready for review`
+                    });
+                  }
+                } else if (eventType === 'pull_request_review') {
+                  const review = context.payload.review;
+                  const reviewer = review.user.login;
+                  const state = review.state;
+                  
+                  let statusEmoji = '💬';
+                  let statusText = 'commented on';
+                  
+                  if (state === 'approved') {
+                    statusEmoji = '✅';
+                    statusText = 'approved';
+                  } else if (state === 'changes_requested') {
+                    statusEmoji = '🔄';
+                    statusText = 'requested changes on';
+                  }
+                  
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    body: `${statusEmoji} @${reviewer} ${statusText} PR #${pr.number}`
+                  });
+                }
+              } catch (error) {
+                console.log(`Error processing issue #${issueNumber}: ${error.message}`);
+              }
+            }

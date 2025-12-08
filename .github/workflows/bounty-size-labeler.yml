@@ -1,0 +1,99 @@
+name: Auto-Label Bounty Tier
+
+on:
+  issues:
+    types: [opened, edited]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to label"
+        required: true
+        type: number
+
+jobs:
+  label-tier:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Detect and label bounty tier
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const BOUNTY_LABEL = 'bounty';
+            const TIER_LABELS = {
+              low: { label: 'tier/Low', payout: '$300-400' },
+              medium: { label: 'tier/Mid', payout: '$400-700' },
+              high: { label: 'tier/High', payout: '$700-1000' }
+            };
+
+            let issueNumber;
+
+            if (context.eventName === 'workflow_dispatch') {
+              issueNumber = context.payload.inputs.issue_number;
+            } else {
+              issueNumber = context.payload.issue.number;
+            }
+
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber
+            });
+
+            // Check if it's a bounty
+            const isBounty = issue.labels.some(l => l.name === BOUNTY_LABEL);
+            if (!isBounty) {
+              console.log('Not a bounty issue, skipping');
+              return;
+            }
+
+            // Check if already has a tier label
+            const existingTierLabel = issue.labels.find(l => l.name.startsWith('tier/'));
+            if (existingTierLabel) {
+              console.log(`Already has tier label: ${existingTierLabel.name}`);
+              return;
+            }
+
+            const body = issue.body || '';
+
+            // Look for explicit tier declaration in issue body
+            // Matches: "Tier: **Low**", "Tier: **Medium**", "Tier: **High**"
+            // Also matches: "Tier: Low", "Tier: Medium", "Tier: High"
+            // Also matches: "**Tier:** Low", "**Tier:** Medium", etc.
+            const tierPatterns = [
+              /tier:\s*\*{0,2}(low|medium|mid|high)\*{0,2}/i,
+              /\*{0,2}tier:?\*{0,2}\s*\*{0,2}(low|medium|mid|high)\*{0,2}/i,
+              /effort\s*tier:\s*\*{0,2}(low|medium|mid|high)\*{0,2}/i
+            ];
+
+            let detectedTier = null;
+
+            for (const pattern of tierPatterns) {
+              const match = body.match(pattern);
+              if (match) {
+                const tierText = match[1].toLowerCase();
+                // Normalize 'mid' to 'medium'
+                detectedTier = tierText === 'mid' ? 'medium' : tierText;
+                console.log(`Found explicit tier declaration: ${detectedTier}`);
+                break;
+              }
+            }
+
+            if (detectedTier && TIER_LABELS[detectedTier]) {
+              const tierInfo = TIER_LABELS[detectedTier];
+              
+              try {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: [tierInfo.label]
+                });
+                
+                console.log(`Added ${tierInfo.label} to issue #${issue.number}`);
+              } catch (error) {
+                console.log(`Error adding label: ${error.message}`);
+              }
+            } else {
+              console.log('No explicit tier found in issue body. Maintainer should add tier label manually.');
+            }

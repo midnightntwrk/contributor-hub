@@ -1,0 +1,185 @@
+name: Check Bounty Assignee Activity
+
+on:
+  schedule:
+    # Runs daily at 9am UTC
+    - cron: "0 9 * * *"
+  workflow_dispatch: # Allow manual trigger for testing
+
+jobs:
+  check-assignee-activity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check bounty issues and unassign stale assignees
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const STALE_DAYS = 7;
+            const BOUNTY_LABEL = 'bounty';
+
+            // Get all open issues with bounty label
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: BOUNTY_LABEL,
+              per_page: 100
+            });
+
+            // Get all bounty issues for checking one-bounty-per-person rule
+            const allBountyIssues = issues.data;
+
+            const now = new Date();
+            const staleThreshold = new Date(now - (STALE_DAYS * 24 * 60 * 60 * 1000));
+
+            console.log(`Checking ${issues.data.length} bounty issues...`);
+
+            for (const issue of issues.data) {
+              // Skip issues without an assignee
+              if (!issue.assignees || issue.assignees.length === 0) {
+                continue;
+              }
+              
+              const assignee = issue.assignees[0].login;
+              
+              // Get timeline to find assignment details
+              const timeline = await github.rest.issues.listEventsForTimeline({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                per_page: 100
+              });
+              
+              // Find the most recent assignment event for this assignee
+              const assignmentEvent = timeline.data
+                .filter(event => event.event === 'assigned' && event.assignee?.login === assignee)
+                .pop();
+              
+              const assignedDate = assignmentEvent ? new Date(assignmentEvent.created_at) : null;
+              
+              // Get all comments on the issue
+              const comments = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                per_page: 100
+              });
+              
+              // Find the most recent comment from the assignee
+              const assigneeComments = comments.data.filter(
+                comment => comment.user.login === assignee
+              );
+              
+              let lastAssigneeActivity;
+              
+              if (assigneeComments.length > 0) {
+                lastAssigneeActivity = new Date(
+                  Math.max(...assigneeComments.map(c => new Date(c.created_at)))
+                );
+              } else if (assignedDate) {
+                lastAssigneeActivity = assignedDate;
+              } else {
+                lastAssigneeActivity = new Date(issue.created_at);
+              }
+              
+              // Check if assignee is stale (7 days no update)
+              if (lastAssigneeActivity < staleThreshold) {
+                console.log(`#${issue.number}: stale, unassigning`);
+                
+                // Keywords for finding next person in queue
+                const strongKeywords = [
+                  'i would like to work on this', 'i\'d like to work on this', 'i want to work on this',
+                  'i\'d love to work on this', 'can i work on this', 'could i work on this',
+                  'can i be assigned', 'could i be assigned', 'please assign me', 'assign me',
+                  'i\'ll take this', 'i will take this', 'i\'d like to take this',
+                  'let me work on this', 'i can work on this', 'i\'m interested in working on this',
+                  'interested in working on this', 'i\'d like to tackle this', 'i\'d like to pick this up',
+                  'i\'ll pick this up', 'can i pick this up', 'i\'d like to claim this',
+                  'claiming this', 'i\'m claiming this', 'i\'ll claim this',
+                  'i\'d like to give this a try', 'can i give this a try', 'i\'ll give this a try',
+                  'i\'d like to handle this', 'i\'ll handle this', 'can i handle this',
+                  'i\'m on it', 'count me in', 'sign me up', 'i volunteer', 'dibs', 'i call dibs'
+                ];
+                
+                // Find next eligible person in queue
+                const queueRequests = comments.data.filter(c => {
+                  if (c.user.login === assignee) return false;
+                  if (c.user.type === 'Bot') return false;
+                  const cLower = c.body.toLowerCase();
+                  return strongKeywords.some(k => cLower.includes(k));
+                });
+                
+                // Sort by date (oldest first for queue fairness)
+                queueRequests.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+                
+                // Find next eligible person (not assigned to another bounty)
+                let nextInQueue = null;
+                for (const req of queueRequests) {
+                  const candidateLogin = req.user.login;
+                  
+                  const alreadyAssignedBounty = allBountyIssues.find(i => 
+                    i.number !== issue.number && 
+                    i.assignees?.some(a => a.login === candidateLogin)
+                  );
+                  
+                  if (!alreadyAssignedBounty) {
+                    nextInQueue = req;
+                    break;
+                  }
+                }
+                
+                // Unassign the current user
+                await github.rest.issues.removeAssignees({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  assignees: [assignee]
+                });
+                
+                if (nextInQueue) {
+                  const nextAssignee = nextInQueue.user.login;
+                  
+                  // Assign the next person in queue
+                  await github.rest.issues.addAssignees({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    assignees: [nextAssignee]
+                  });
+                  
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    body: `## 🔄 Bounty Reassigned\n\nUnassigned from @${assignee} (inactive 7+ days).\n\n**@${nextAssignee}** - You've been assigned! Review the deliverables and [style guide](https://docs.google.com/document/d/1Srfgnn5Utp6fDXxJknwpQUd6l5TQNR9k_BJjtjAmm_s/edit), then post your approach and timeline. Remember: **weekly updates required**.`
+                  });
+                  
+                  console.log(`#${issue.number}: reassigned`);
+                } else {
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    body: `## 🔓 Bounty Available\n\nUnassigned from @${assignee} (inactive 7+ days). This bounty is now open for assignment.\n\nInterested? Comment below. Review the [style guide](https://docs.google.com/document/d/1Srfgnn5Utp6fDXxJknwpQUd6l5TQNR9k_BJjtjAmm_s/edit) first.`
+                  });
+                  
+                  console.log(`#${issue.number}: unassigned, no queue`);
+                }
+                
+                // Remove has-queue label if present (will be re-evaluated on next request)
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    name: 'has-queue'
+                  });
+                } catch (e) {
+                  // Label might not exist, ignore
+                }
+              }
+              // Active issues don't need logging
+            }
+
+            console.log(`Done`);

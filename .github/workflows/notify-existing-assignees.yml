@@ -1,0 +1,62 @@
+name: Notify Existing Bounty Assignees
+
+# This is a ONE-TIME workflow to warn existing assignees about the new activity tracking
+# Run manually, then delete this file after it's done
+
+on:
+  workflow_dispatch:
+
+jobs:
+  notify-assignees:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post warning to all assigned bounty issues
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const BOUNTY_LABEL = 'bounty';
+
+            // Get all open bounty issues
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: BOUNTY_LABEL,
+              per_page: 100
+            });
+
+            console.log(`Processing ${issues.data.length} bounty issues...`);
+
+            for (const issue of issues.data) {
+              if (!issue.assignees || issue.assignees.length === 0) continue;
+              
+              const assignee = issue.assignees[0].login;
+              
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `📢 @${assignee} Activity tracking is now active. Post a progress update within **7 days** or this bounty will be automatically unassigned. If you can no longer work on this, let us know.`
+              });
+              
+              console.log(`#${issue.number}: notified`);
+              
+              // Small delay to avoid rate limiting
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+
+            console.log('Done notifying assignees.');
+
+      - name: Delete this workflow file
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/notify-existing-assignees.yml
+          git commit -m "chore: auto-delete one-time notification workflow"
+          git push

@@ -1,0 +1,192 @@
+name: Bounty Assignment Request Handler
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  handle-assignment-request:
+    runs-on: ubuntu-latest
+    # Only run on issues (not PRs)
+    if: ${{ !github.event.issue.pull_request }}
+    steps:
+      - name: Handle bounty assignment requests
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const BOUNTY_LABEL = 'bounty';
+            const QUEUED_LABEL = 'has-queue';
+
+            const issue = context.payload.issue;
+            const comment = context.payload.comment;
+            const commenter = comment.user.login;
+
+            // Check if issue has bounty label
+            const hasBountyLabel = issue.labels.some(label => label.name === BOUNTY_LABEL);
+            if (!hasBountyLabel) {
+              console.log('Not a bounty issue, skipping');
+              return;
+            }
+
+            // Skip bot comments
+            if (comment.user.type === 'Bot') {
+              console.log('Bot comment, skipping');
+              return;
+            }
+
+            // Keywords that indicate assignment request
+            const assignmentKeywords = [
+              'i would like to work on this',
+              'i\'d like to work on this',
+              'i want to work on this',
+              'i\'d love to work on this',
+              'can i work on this',
+              'could i work on this',
+              'can i be assigned',
+              'could i be assigned',
+              'please assign me',
+              'please assign this to me',
+              'assign me',
+              'i\'ll take this',
+              'i will take this',
+              'i\'d like to take this',
+              'let me work on this',
+              'i can work on this',
+              'i\'m interested in working on this',
+              'interested in working on this',
+              'i\'d like to tackle this',
+              'i\'d like to pick this up',
+              'i\'ll pick this up',
+              'can i pick this up',
+              'i\'d like to claim this',
+              'i want to claim this',
+              'claiming this',
+              'i\'m claiming this',
+              'i\'ll claim this',
+              'i\'d like to give this a try',
+              'can i give this a try',
+              'i\'ll give this a try',
+              'i\'d like to handle this',
+              'i\'ll handle this',
+              'can i handle this',
+              'i\'m on it',
+              'count me in',
+              'sign me up',
+              'i volunteer',
+              'dibs',
+              'i call dibs'
+            ];
+
+            const commentLower = comment.body.toLowerCase();
+            const isAssignmentRequest = assignmentKeywords.some(keyword => commentLower.includes(keyword));
+
+            if (!isAssignmentRequest) {
+              console.log('Not an assignment request, skipping');
+              return;
+            }
+
+            const isAssigned = issue.assignees && issue.assignees.length > 0;
+            const isAlreadyAssignee = isAssigned && issue.assignees.some(a => a.login === commenter);
+
+            // If commenter is already the assignee, ignore
+            if (isAlreadyAssignee) {
+              console.log('Commenter is already assigned to this issue, skipping');
+              return;
+            }
+
+            // Check if the commenter is already assigned to another open bounty
+            const allBountyIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: BOUNTY_LABEL,
+              per_page: 100
+            });
+
+            const commenterAssignedBounty = allBountyIssues.data.find(i => 
+              i.number !== issue.number && 
+              i.assignees?.some(a => a.login === commenter)
+            );
+
+            if (commenterAssignedBounty) {
+              // User is already assigned to another bounty
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `@${commenter} You're already assigned to #${commenterAssignedBounty.number}. Complete that first or ask to be unassigned before requesting another bounty.`
+              });
+              
+              console.log(`Blocked ${commenter} - already assigned to #${commenterAssignedBounty.number}`);
+              return;
+            }
+
+            if (isAssigned) {
+              // Issue is already assigned to someone else - show queue position
+              const currentAssignee = issue.assignees[0].login;
+              
+              // Get all comments to determine queue position
+              const comments = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                per_page: 100
+              });
+              
+              // Find previous assignment requests (excluding current assignee and bots)
+              const previousRequests = comments.data.filter(c => {
+                if (c.user.login === currentAssignee) return false;
+                if (c.user.login === commenter) return false;
+                if (c.user.type === 'Bot') return false;
+                if (c.id === comment.id) return false;
+                const cLower = c.body.toLowerCase();
+                return assignmentKeywords.some(keyword => cLower.includes(keyword));
+              });
+              
+              // Get unique users in queue (excluding those already assigned to other bounties)
+              const usersInQueue = [...new Set(previousRequests.map(c => c.user.login))];
+              
+              // Filter out users who are assigned to other bounties
+              const eligibleUsersInQueue = [];
+              for (const user of usersInQueue) {
+                const userAssignedBounty = allBountyIssues.data.find(i => 
+                  i.number !== issue.number && 
+                  i.assignees?.some(a => a.login === user)
+                );
+                if (!userAssignedBounty) {
+                  eligibleUsersInQueue.push(user);
+                }
+              }
+              
+              const queuePosition = eligibleUsersInQueue.length + 1;
+              
+              // Add queue label if not present
+              const hasQueueLabel = issue.labels.some(label => label.name === QUEUED_LABEL);
+              if (!hasQueueLabel) {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: [QUEUED_LABEL]
+                });
+              }
+              
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `@${commenter} This bounty is assigned to @${currentAssignee}. You're **#${queuePosition} in the queue** and will be notified if it becomes available.`
+              });
+              
+              console.log(`Added ${commenter} to queue for issue #${issue.number} at position ${queuePosition}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `@${commenter} A maintainer will review and assign you shortly. Please review the [style guide](https://docs.google.com/document/d/1Srfgnn5Utp6fDXxJknwpQUd6l5TQNR9k_BJjtjAmm_s/edit) while you wait.`
+              });
+              
+              console.log(`Notified ${commenter} that their request for #${issue.number} is pending maintainer review`);
+            }

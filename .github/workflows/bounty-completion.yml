@@ -1,0 +1,91 @@
+name: Handle Bounty Completion
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  handle-bounty-completion:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+    steps:
+      - name: Mark bounty as completed
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const BOUNTY_LABEL = 'bounty';
+            const COMPLETED_LABEL = 'completed';
+            const LABELS_TO_REMOVE = ['in-progress', 'in-review', 'stale-assignee', 'has-queue'];
+
+            const pr = context.payload.pull_request;
+            const prAuthor = pr.user.login;
+            const prBody = pr.body || '';
+            const prTitle = pr.title || '';
+
+            // Find linked issues
+            const issuePatterns = [
+              /(?:fix(?:es)?|close(?:s)?|resolve(?:s)?)\s*#(\d+)/gi,
+              /(?:fix(?:es)?|close(?:s)?|resolve(?:s)?)\s+(?:issue\s+)?#(\d+)/gi
+            ];
+
+            const linkedIssueNumbers = new Set();
+            const textToSearch = `${prTitle} ${prBody}`;
+
+            for (const pattern of issuePatterns) {
+              let match;
+              while ((match = pattern.exec(textToSearch)) !== null) {
+                linkedIssueNumbers.add(parseInt(match[1]));
+              }
+            }
+
+            for (const issueNumber of linkedIssueNumbers) {
+              try {
+                const { data: issue } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber
+                });
+                
+                const isBounty = issue.labels.some(label => label.name === BOUNTY_LABEL);
+                if (!isBounty) continue;
+                
+                // Add completed label
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  labels: [COMPLETED_LABEL]
+                });
+                
+                // Remove progress labels
+                for (const label of LABELS_TO_REMOVE) {
+                  try {
+                    await github.rest.issues.removeLabel({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issueNumber,
+                      name: label
+                    });
+                  } catch (e) {
+                    // Label might not exist
+                  }
+                }
+                
+                // Calculate time to completion
+                const createdAt = new Date(issue.created_at);
+                const mergedAt = new Date(pr.merged_at);
+                const daysToComplete = Math.round((mergedAt - createdAt) / (1000 * 60 * 60 * 24));
+                
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  body: `🎊 Bounty completed by @${prAuthor}! PR #${pr.number} merged (${daysToComplete} days, +${pr.additions}/-${pr.deletions} lines).`
+                });
+                
+                console.log(`Marked bounty #${issueNumber} as completed`);
+              } catch (error) {
+                console.log(`Error: ${error.message}`);
+              }
+            }
