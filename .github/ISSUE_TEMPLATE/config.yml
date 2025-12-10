@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📘 Report a Documentation Issue or Suggestion
+    url: https://github.com/midnightntwrk/midnight-docs/issues/new/choose
+    about: Please report all documentation issues in the `midnight-docs` repository.

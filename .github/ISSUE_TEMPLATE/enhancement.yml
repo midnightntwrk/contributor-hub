@@ -1,0 +1,63 @@
+name: ✨ Feature Request
+description: Propose a new feature or enhancement.
+title: "[Feature]: "
+labels: ['enhancement']
+body:
+  - type: markdown
+    attributes:
+      value: "## ⚠️ Where does this feature belong?"
+
+  - type: checkboxes
+    id: feature-scope-check
+    attributes:
+      label: Feature Scope
+      description: Please check all that apply to help us route your request to the right place.
+      options:
+        - label: "This is a **core protocol change**, **new token standard**, or **consensus change**."
+        - label: "This feature is for a **different, specific repository** (e.g., `midnight-docs`, `midnight-node`)."
+
+  - type: markdown
+    attributes:
+      value: |
+        > **If you checked "core protocol change"**: Please **STOP** and submit this as a [**Midnight Improvement Proposal (MIP)**](https://github.com/midnightntwrk/midnight-improvement-proposals) instead. This repository is not for MIPs.
+        >
+        > **If you checked "different, specific repository"**: Please **STOP** and [**find the specific repository**](https://github.com/midnightntwrk/repositories) (e.g., `midnight-docs`) and open your issue there. This helps the right maintainers see it.
+        >
+        > **If *neither* of the above apply, your feature is for *this* repository. Please continue!**
+        ---
+
+  - type: markdown
+    attributes:
+      value: "## Feature Details (for *this* repository)"
+
+  - type: textarea
+    id: problem-statement
+    attributes:
+      label: Problem Statement
+      description: What user problem is this feature solving? Why do we need this?
+      placeholder: "As a [user type], I am frustrated when [I try to do something] because [of this problem]."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed Solution
+      description: How do you see this feature working? What are the key user interactions or behaviors?
+      placeholder: "This feature would allow a user to [perform an action]. This could be implemented by [brief technical idea]..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: value-prop
+    attributes:
+      label: Value & Justification
+      description: Who benefits from this, and how? Why is this important to prioritize?
+      placeholder: "This is valuable for [target user] because it will [unlock this new ability / save them time / improve security]."
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered (Optional)
+      description: What other ways could we solve this problem, and why is this proposal better?
+      placeholder: "We could also [do X], but that wouldn't be as good because [reason]."
