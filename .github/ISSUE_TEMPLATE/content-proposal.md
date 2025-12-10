@@ -2,7 +2,7 @@
 name: Content Proposal 
 about: Propose a piece of content
 title: ""
-labels: content-proposal, public, hacktoberfest
+labels: content-proposal, public
 assignees: ""
 ---
 

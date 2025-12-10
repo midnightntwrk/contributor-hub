@@ -2,7 +2,7 @@
 name: DApp Proposal
 about: Propose an idea for a DApp
 title: ""
-labels: dapp-proposal, public, hacktoberfest
+labels: dapp-proposal, public
 assignees: ""
 ---
 

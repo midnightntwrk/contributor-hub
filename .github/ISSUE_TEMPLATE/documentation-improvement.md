@@ -2,7 +2,7 @@
 name: Documentation improvement
 about: Report a problem with the documentation
 title: ""
-labels: midnight-template-repo, public, documentation, hacktoberfest
+labels: midnight-template-repo, public, documentation
 assignees: ""
 ---
 
