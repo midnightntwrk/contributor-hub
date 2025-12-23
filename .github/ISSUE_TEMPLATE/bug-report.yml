@@ -1,0 +1,70 @@
+name: Bug Report
+description: Report a bug to help us improve the Midnight network.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### 🛑 Important Note
+        If this bug pertains to a specific open-source repository in the [midnightntwrk](https://github.com/midnightntwrk) GitHub organization (e.g., `midnight-js`, `midnight-docs`), please **open the bug directly in that repository** instead.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+      placeholder: Provide a detailed summary of the issue...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: How can we recreate this issue?
+      placeholder: |
+        1. Go to '...'
+        2. Click on '....'
+        3. Scroll down to '....'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected vs. Actual Behavior
+      description: What did you expect to happen, and what actually happened?
+      placeholder: |
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Please provide details about your development environment (OS, browser version, library version, etc.).
+      placeholder: e.g., macOS 14.0, Chrome 120, midnight-js v0.1.0
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Add any other context, screenshots, or logs about the problem here.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched for existing issues and did not find a duplicate.
+          required: true
+        - label: I agree to follow the [Code of Conduct](https://github.com/midnightntwrk/community-hub/blob/main/CODE_OF_CONDUCT.md).
+          required: true
