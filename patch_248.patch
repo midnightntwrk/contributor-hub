@@ -1,0 +1,29 @@
+--- a/src/components/ScrollableContainer.js
++++ b/src/components/ScrollableContainer.js
+@@ -1,5 +1,7 @@
+ import React from 'react';
+ 
++const throttle = (func, wait) => {
++  let timeout = null;
++  return (...args) => {
++    if (!timeout) {
++      func.apply(this, args);
++      timeout = setTimeout(() => { timeout = null; }, wait);
++    }
++  };
++};
++
+ const ScrollableContainer = () => {
+   const handleScroll = () => {
+     // 处理滚动事件的逻辑
+@@ -12,7 +14,8 @@
+ 
+   React.useEffect(() => {
+-    window.addEventListener('scroll', handleScroll);
++    const throttledHandleScroll = throttle(handleScroll, 16);
++    window.addEventListener('scroll', throttledHandleScroll);
+     return () => {
+-      window.removeEventListener('scroll', handleScroll);
++      window.removeEventListener('scroll', throttledHandleScroll);
+     };
+   }, []);
