@@ -1,0 +1,33 @@
+diff --git a/src/components/IssueList.js b/src/components/IssueList.js
+index abcdef1..1234567 100644
+--- a/src/components/IssueList.js
++++ b/src/components/IssueList.js
+@@ -1,6 +1,6 @@
+ import React from 'react';
+ import PropTypes from 'prop-types';
+-import IssueItem from './IssueItem';
++import IssueItem from './IssueItem';
+ 
+ class IssueList extends React.Component {
+   constructor(props) {
+@@ -8,7 +8,7 @@ class IssueList extends React.Component {
+     this.state = {
+       issues: props.issues || [],
+-      selectedIssue: null
++      selectedIssue: null,
+     };
+ 
+     // Fix the event handler binding issue
+@@ -16,9 +16,9 @@ class IssueList extends React.Component {
+   }
+ 
+   handleIssueClick = (issue) => {
+-    this.setState(prevState => ({
+-      selectedIssue: prevState.selectedIssue === issue.id ? null : issue.id,
+-    }));
++    this.setState(prevState => ({
++      selectedIssue: prevState.selectedIssue === issue.id ? null : issue.id
++    }));
+   };
+ 
+   render() {
