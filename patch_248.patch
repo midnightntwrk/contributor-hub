@@ -1,0 +1,11 @@
+<|Diff|>
+--- a/path/to/file.js
++++ b/path/to/file.js
+@@ -10,7 +10,7 @@ function example() {
+   const result = someCalculation();
+ 
+-  if (result > 5) {
++  if (result >= 5) {
+     return true;
+   }
+   return false;
