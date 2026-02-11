@@ -10,6 +10,9 @@ The **Contributor Hub** is the central collaborative platform for gathering and 
 
 We welcome contributions of all types, including code, documentation, and technical content.
 
+Featured tutorial draft:
+- [Solidity-to-Compact Comparison Guide](./tutorials/solidity-to-compact-comparison.md)
+
 ### Submitting Issues
 Use our GitHub Issue Forms to submit:
 * **Bug Reports:** Provide detailed information including steps to reproduce and expected behavior. Note: if a bug pertains to a specific repo (like `midnight-js`), report it there directly.
