@@ -20,6 +20,17 @@ Ensure the title is a clear summary of the requirement and provides enough conte
 * **Feature Request:** Clearly describe your feature, its benefits, and most importantly, the expected outcome. This helps us analyze the proposed solution and develop alternatives.
 * **Enhancement:** (WIP)
 
+## Bounty Participation
+
+**For Bounty Issues:**
+
+* **Open Competition:** Bounties are open competitions where anyone can submit solutions. You do not need to be formally assigned to work on a bounty.
+* **Best Solution Wins:** The best valid submission that meets all requirements will be selected for the reward.
+* **Multiple Submissions Welcome:** Contributors are encouraged to submit their best work, as selection is based on quality and completeness rather than submission order.
+* **Review Process:** All bounty submissions undergo review by project maintainers to ensure they meet the specified requirements.
+
+For complete bounty terms and conditions, please refer to our [Bounty Terms](legal/BOUNTY_TERMS.md).
+
 ## Code Contribution Process
 
 * **Pull Requests:** Code contributions are submitted via Pull Requests.
@@ -54,16 +65,4 @@ Ensure the title is a clear summary of the requirement and provides enough conte
 //	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-```
-
-Where this is not possible, a copy of the Apache 2.0 or the repository's top-level LICENSE file in the same directory is required
-
-## Support and Communication:
-
-Ask anything about Midnight! We're here to help. Connect with us on [Discord](https://discord.com/invite/midnightnetwork), [Telegram](https://t.me/Midnight_Network_Official), and [X](https://x.com/MidnightNtwrk) and Join the Community to stay updated and engage with other Midnight enthusiasts.
-
-We appreciate your contributions!
+// di
