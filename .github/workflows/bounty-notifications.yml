@@ -12,7 +12,7 @@ jobs:
     steps:
       - name: Extract bounty information
         id: bounty_info
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const issue = context.payload.issue;
@@ -34,7 +34,7 @@ jobs:
             "$DISCORD_WEBHOOK"
       
       - name: Post Confirmation Comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             await github.rest.issues.createComment({
