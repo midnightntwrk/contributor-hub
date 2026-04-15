@@ -1,0 +1,77 @@
+/*
+ * Copyright 2026 Midnight Foundation
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+pragma language compact;
+
+import "@midnight-ntwrk/compact-runtime";
+
+// --- Multi-Party Privacy Definitions ---
+// In a multi-party system (N-Party), we manage state that multiple
+// participants can independently update while maintaining local privacy.
+
+export ledger total_approvals: Uint32;
+export ledger required_signatures: Uint32;
+export ledger payout_amount: Uint64;
+export ledger status: Enum<"Voting", "Authorized", "Executed">;
+
+// --- The N-Party Registry ---
+// We key authorized parties by their public keys.
+export ledger authorized_members: Map<PubKey, Boolean>;
+
+// --- The Nullifier Map (Privacy Enforcement) ---
+// To prevent a single member from voting multiple times, we use nullifiers.
+// In a real N-party contract, the nullifier would be derived from the 
+// member's secret key and the specific 'payout_id'.
+export ledger voted_nullifiers: Map<Bytes[32], Boolean>;
+
+// --- Circuit: Join the Multi-Party Pool ---
+export circuit join(member: PubKey): void {
+    // In this tutorial example, the first member can join directly.
+    // In production, an 'admin' or 'multisig' would authorize new members.
+    authorized_members.set(member, true);
+}
+
+// --- Circuit: Private Approval (The Core N-Party Logic) ---
+// This circuit proves:
+// 1. The issuer is an authorized member.
+// 2. The issuer has not voted yet (nullifier check).
+export circuit approve(nullifier: Bytes[32]): void {
+    const issuer = context.transaction.issuer;
+    
+    // Check Authorization (Public Ledger lookup)
+    assert(authorized_members.get(issuer) == true, "Unauthorized member");
+    
+    // Check for Double-Voting (Privacy-preserving via Nullifier)
+    assert(voted_nullifiers.get(nullifier) == false, "Already voted");
+    
+    // Mark nullifier as spent
+    voted_nullifiers.set(nullifier, true);
+    
+    // Update global state
+    total_approvals.set(total_approvals.get() + 1);
+    
+    // Threshold check
+    if (total_approvals.get() >= required_signatures.get()) {
+        status.set("Authorized");
+    }
+}
+
+// --- Circuit: Execute Payout ---
+export circuit execute(): void {
+    assert(status.get() == "Authorized", "Payout not authorized");
+    status.set("Executed");
+    // Implementation for actual shielded value transfer would go here
+}
