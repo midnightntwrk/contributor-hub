@@ -1,0 +1,148 @@
+pragma language_version 0.22;
+
+import CompactStandardLibrary;
+
+export enum VotingPhase {
+  INIT,
+  COMMIT,
+  REVEAL,
+  ENDED
+}
+
+export enum VoteOption {
+  ABSTAIN,
+  YES,
+  NO
+}
+
+export ledger organizer: ZswapCoinPublicKey;
+export ledger proposalTitle: Bytes<64>;
+export ledger proposalDescription: Bytes<256>;
+export ledger phase: VotingPhase;
+export ledger phaseDeadline: Uint<64>;
+
+export ledger eligibleVoters: MerkleTree<20, Bytes<32>>;
+export ledger voterCommitments: Map<Bytes<32>, Bytes<32>>;
+export ledger voterNullifiers: Set<Bytes<32>>;
+
+export ledger yesVotes: Counter;
+export ledger noVotes: Counter;
+export ledger abstainVotes: Counter;
+export ledger totalCommitted: Counter;
+export ledger totalRevealed: Counter;
+
+constructor(
+  title: Bytes<64>,
+  description: Bytes<256>,
+  commitDuration: Uint<64>,
+  revealDuration: Uint<64>,
+  sk: Bytes<32>
+) {
+  organizer = ownPublicKey();
+  proposalTitle = disclose(title);
+  proposalDescription = disclose(description);
+  phase = VotingPhase.INIT;
+  phaseDeadline = commitDuration + revealDuration;
+}
+
+export circuit startCommitPhase(commitDuration: Uint<64>): [] {
+  assert(organizer == ownPublicKey(), "not authorized");
+  assert(phase == VotingPhase.INIT, "wrong phase");
+  phase = VotingPhase.COMMIT;
+  phaseDeadline = commitDuration;
+}
+
+export circuit startRevealPhase(revealDuration: Uint<64>): [] {
+  assert(organizer == ownPublicKey(), "not authorized");
+  assert(phase == VotingPhase.COMMIT, "not in commit phase");
+  assert(blockTimeGte(phaseDeadline), "deadline not reached");
+  phase = VotingPhase.REVEAL;
+  phaseDeadline = blockTimeLt(0) as Uint<64> + revealDuration;
+}
+
+export circuit endVoting(): [] {
+  assert(organizer == ownPublicKey(), "not authorized");
+  assert(phase == VotingPhase.REVEAL, "not in reveal phase");
+  assert(blockTimeGte(phaseDeadline), "deadline not reached");
+  phase = VotingPhase.ENDED;
+}
+
+witness findVoterPath(voterPk: Bytes<32>): MerkleTreePath<20, Bytes<32>>;
+witness localSecret(): Bytes<32>;
+witness localVote(): VoteOption;
+witness localSalt(): Bytes<32>;
+
+export circuit addEligibleVoters(voterPk: Bytes<32>): [] {
+  assert(organizer == ownPublicKey(), "not authorized");
+  eligibleVoters.insert(voterPk);
+}
+
+export circuit verifyEligible(voterPk: Bytes<32>): [] {
+  const path = findVoterPath(voterPk);
+  const root = merkleTreePathRoot<20, Bytes<32>>(path);
+  assert(eligibleVoters.checkRoot(root), "not eligible");
+}
+
+export circuit commitVote(voterPk: Bytes<32>): [] {
+  assert(phase == VotingPhase.COMMIT, "not in commit phase");
+  assert(blockTimeLt(phaseDeadline), "commit deadline passed");
+
+  const sk = localSecret();
+  const dVoterPk = disclose(voterPk);
+  verifyEligible(dVoterPk);
+
+  const salt = localSalt();
+  const vote = localVote();
+  assert(vote != VoteOption.ABSTAIN, "cannot commit abstain");
+
+  const commitment = computeCommitment(vote, sk, salt);
+  assert(!voterCommitments.member(dVoterPk), "already committed");
+
+  voterCommitments.insert(dVoterPk, commitment);
+  totalCommitted.increment(1);
+}
+
+export circuit revealVote(voterPk: Bytes<32>): [] {
+  assert(phase == VotingPhase.REVEAL, "not in reveal phase");
+  assert(blockTimeLt(phaseDeadline), "reveal deadline passed");
+
+  const sk = localSecret();
+  const dVoterPk = disclose(voterPk);
+  verifyEligible(dVoterPk);
+
+  const storedCommitment = voterCommitments.lookup(dVoterPk);
+  assert(storedCommitment != none, "not committed");
+
+  const salt = localSalt();
+  const vote = localVote();
+  assert(vote != VoteOption.ABSTAIN, "cannot reveal abstain");
+
+  const nullifier = computeNullifier(sk);
+  assert(!voterNullifiers.member(nullifier), "already revealed");
+  voterNullifiers.insert(disclose(nullifier));
+
+  const commitment = computeCommitment(vote, sk, salt);
+  assert(storedCommitment == commitment, "commitment mismatch");
+
+  if (disclose(vote) == VoteOption.YES) {
+    yesVotes.increment(1);
+  } else {
+    noVotes.increment(1);
+  }
+  totalRevealed.increment(1);
+}
+
+export circuit getResults(): Uint<64> {
+  assert(phase == VotingPhase.ENDED, "voting not ended");
+  return yesVotes.read() as Uint<64>;
+}
+
+circuit computeCommitment(vote: VoteOption, sk: Bytes<32>, salt: Bytes<32>): Bytes<32> {
+  const domainSep = pad(32, "midnight:voting:commitment");
+  return persistentCommit<Vector<3, Bytes<32>>>([domainSep, vote as Bytes<32>, sk], salt);
+}
+
+circuit computeNullifier(sk: Bytes<32>): Bytes<32> {
+  const domainSep = pad(32, "midnight:voting:nullifier");
+  return persistentCommit<Vector<2, Bytes<32>>([domainSep, sk], pad(32, "nullifier-salt"));
+}
