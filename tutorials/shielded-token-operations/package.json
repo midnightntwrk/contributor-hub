@@ -1,0 +1,22 @@
+{
+  "name": "shielded-token-operations",
+  "version": "1.0.0",
+  "description": "Midnight Shielded Token Operations: Mint, Transfer & Burn with Test Suite",
+  "private": true,
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "compile": "midnight-mcp compile src/shielded_token.compact",
+    "lint": "eslint src/ tests/"
+  },
+  "dependencies": {
+    "@midnight-ntwrk/compact-runtime": "^0.8.0"
+  },
+  "devDependencies": {
+    "vitest": "^1.6.0",
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0"
+  },
+  "license": "Apache-2.0"
+}

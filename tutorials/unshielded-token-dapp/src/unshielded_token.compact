@@ -1,0 +1,277 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Unshielded Token dApp with UI
+// This Compact contract manages unshielded tokens with
+// standard ERC-20-like operations: mint, transfer, approve.
+
+pragma language_version 0.16;
+
+import CompactStandardLibrary;
+
+// Event circuits for frontend event tracking
+circuit TransferEvent {
+  from: Opaque<"bytes20">;
+  to: Opaque<"bytes20">;
+  amount: Uint<128>;
+}
+
+circuit ApprovalEvent {
+  owner: Opaque<"bytes20">;
+  spender: Opaque<"bytes20">;
+  amount: Uint<128>;
+}
+
+// Main contract managing unshielded token operations
+contract UnshieldedTokenManager {
+  // ─── Ledger State ───────────────────────────────────────
+  ledger {
+    // Token metadata
+    token_name: Bytes<32>;
+    token_symbol: Bytes<8>;
+
+    // Total supply of tokens
+    total_supply: Uint<128>;
+
+    // Balance mapping: address -> balance
+    balances: Map<Opaque<"bytes20">, Uint<128>>;
+
+    // The designated minter address
+    minter: Opaque<"bytes20">;
+
+    // Allowance mapping: (owner, spender) -> allowed amount
+    allowances: Map<Tuple<Opaque<"bytes20">, Opaque<"bytes20">>, Uint<128>>;
+
+    // Whether the contract is paused
+    paused: Boolean;
+  }
+
+  // ─── Constructor ────────────────────────────────────────
+
+  // Initialize the token contract
+  // @param name - The token name (up to 32 bytes)
+  // @param symbol - The token symbol (up to 8 bytes)
+  constructor(name: Bytes<32>, symbol: Bytes<8>) {
+    self.ledger.token_name = name;
+    self.ledger.token_symbol = symbol;
+    self.ledger.total_supply = 0;
+    self.ledger.minter = context.transaction.signer;
+    self.ledger.paused = false;
+  }
+
+  // ─── Access Control ─────────────────────────────────────
+
+  // Ensure only the minter can call this function
+  @constraint
+  fn only_minter() {
+    assert self.ledger.minter == context.transaction.signer,
+           "Only minter can call this";
+  }
+
+  // Ensure the contract is not paused
+  @constraint
+  fn when_not_paused() {
+    assert !self.ledger.paused, "Contract is paused";
+  }
+
+  // ─── Mint ───────────────────────────────────────────────
+
+  // Mint new tokens to the specified address
+  // Only callable by the minter
+  //
+  // @param to - Recipient address
+  // @param amount - Amount to mint
+  // @return true if successful
+  @observable
+  export circuit mint(
+    to: Opaque<"bytes20">,
+    amount: Uint<128>
+  ): Boolean {
+    only_minter();
+    when_not_paused();
+    assert amount > 0, "Amount must be positive";
+
+    // Update balance
+    let current = self.ledger.balances[to] ?? 0;
+    self.ledger.balances[to] = current + amount;
+
+    // Update total supply
+    self.ledger.total_supply = self.ledger.total_supply + amount;
+
+    return true;
+  }
+
+  // ─── Transfer ───────────────────────────────────────────
+
+  // Transfer tokens from the caller to another address
+  //
+  // @param to - Recipient address
+  // @param amount - Amount to transfer
+  // @return true if successful
+  @observable
+  export circuit transfer(
+    to: Opaque<"bytes20">,
+    amount: Uint<128>
+  ): Boolean {
+    when_not_paused();
+    assert amount > 0, "Amount must be positive";
+
+    let sender = context.transaction.signer;
+    let sender_balance = self.ledger.balances[sender] ?? 0;
+    assert sender_balance >= amount, "Insufficient balance";
+
+    // Deduct from sender
+    self.ledger.balances[sender] = sender_balance - amount;
+
+    // Add to recipient
+    let recipient_balance = self.ledger.balances[to] ?? 0;
+    self.ledger.balances[to] = recipient_balance + amount;
+
+    return true;
+  }
+
+  // ─── Approve ────────────────────────────────────────────
+
+  // Approve a spender to spend tokens on behalf of the caller
+  //
+  // @param spender - Address approved to spend
+  // @param amount - Approved amount
+  // @return true if successful
+  @observable
+  export circuit approve(
+    spender: Opaque<"bytes20">,
+    amount: Uint<128>
+  ): Boolean {
+    when_not_paused();
+
+    let owner = context.transaction.signer;
+    let key = Tuple(owner, spender);
+    self.ledger.allowances[key] = amount;
+
+    return true;
+  }
+
+  // ─── Transfer From ──────────────────────────────────────
+
+  // Transfer tokens from one address to another using allowance
+  // Requires prior approval from the owner
+  //
+  // @param from - Address to transfer from
+  // @param to - Recipient address
+  // @param amount - Amount to transfer
+  // @return true if successful
+  @observable
+  export circuit transfer_from(
+    from: Opaque<"bytes20">,
+    to: Opaque<"bytes20">,
+    amount: Uint<128>
+  ): Boolean {
+    when_not_paused();
+    assert amount > 0, "Amount must be positive";
+
+    let sender = context.transaction.signer;
+    let key = Tuple(from, sender);
+    let allowance = self.ledger.allowances[key] ?? 0;
+    let from_balance = self.ledger.balances[from] ?? 0;
+
+    assert allowance >= amount, "Insufficient allowance";
+    assert from_balance >= amount, "Insufficient balance";
+
+    // Update allowance
+    self.ledger.allowances[key] = allowance - amount;
+
+    // Update balances
+    self.ledger.balances[from] = from_balance - amount;
+    let to_balance = self.ledger.balances[to] ?? 0;
+    self.ledger.balances[to] = to_balance + amount;
+
+    return true;
+  }
+
+  // ─── View Functions ─────────────────────────────────────
+
+  // Get the balance of an account
+  //
+  // @param account - Address to check
+  // @return The account balance
+  @view
+  export circuit balance_of(account: Opaque<"bytes20">): Uint<128> {
+    return self.ledger.balances[account] ?? 0;
+  }
+
+  // Get the total token supply
+  //
+  // @return Total supply
+  @view
+  export circuit get_total_supply(): Uint<128> {
+    return self.ledger.total_supply;
+  }
+
+  // Get the allowance for a spender
+  //
+  // @param owner - Token owner
+  // @param spender - Approved spender
+  // @return The approved amount
+  @view
+  export circuit get_allowance(
+    owner: Opaque<"bytes20">,
+    spender: Opaque<"bytes20">
+  ): Uint<128> {
+    let key = Tuple(owner, spender);
+    return self.ledger.allowances[key] ?? 0;
+  }
+
+  // Get the token name
+  //
+  // @return The token name
+  @view
+  export circuit get_name(): Bytes<32> {
+    return self.ledger.token_name;
+  }
+
+  // Get the token symbol
+  //
+  // @return The token symbol
+  @view
+  export circuit get_symbol(): Bytes<8> {
+    return self.ledger.token_symbol;
+  }
+
+  // Check if the contract is paused
+  //
+  // @return True if paused
+  @view
+  export circuit is_paused(): Boolean {
+    return self.ledger.paused;
+  }
+
+  // ─── Admin Functions ────────────────────────────────────
+
+  // Pause the contract (minter only)
+  @observable
+  export circuit pause(): Boolean {
+    only_minter();
+    self.ledger.paused = true;
+    return true;
+  }
+
+  // Unpause the contract (minter only)
+  @observable
+  export circuit unpause(): Boolean {
+    only_minter();
+    self.ledger.paused = false;
+    return true;
+  }
+}

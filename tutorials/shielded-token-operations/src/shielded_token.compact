@@ -1,0 +1,262 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Shielded Token Operations: Mint, Transfer & Burn
+// This Compact contract demonstrates the complete shielded token
+// lifecycle on the Midnight Network.
+
+pragma language_version 0.16;
+
+import CompactStandardLibrary;
+
+// Represents a shielded token with its underlying coin data
+circuit ShieldedToken {
+  coin: Coin;
+}
+
+// Result of a shielded send operation, containing the sent
+// coin and any change that needs to be returned to the sender
+circuit ShieldedSendResult {
+  sent: ShieldedToken;
+  change: Option<ShieldedToken>;
+}
+
+// Main contract managing the shielded token lifecycle
+contract ShieldedTokenManager {
+  // ─── Ledger State ───────────────────────────────────────
+  ledger {
+    // Tracks total tokens minted (for supply verification)
+    total_minted: Uint<128>;
+
+    // Tracks total tokens burned (for supply verification)
+    total_burned: Uint<128>;
+
+    // The authorized minter address (set at deployment)
+    minter: Either<Null, Opaque<"bytes20">>;
+
+    // Merkle tree storing committed shielded coins
+    // Depth 32 allows for ~4 billion coins
+    coin_tree: MerkleTree<32>;
+
+    // Nullifier set to prevent double-spending
+    // Maps coin nullifier -> spent status
+    nullifiers: Map<Opaque<"bytes32">, Boolean>;
+  }
+
+  // ─── Access Control ─────────────────────────────────────
+
+  // Ensures only the designated minter can call the function
+  @constraint
+  fn only_minter() {
+    assert self.ledger.minter.is_right(), "Minter not set";
+    assert self.ledger.minter.right() == context.transaction.signer,
+           "Only minter can call this";
+  }
+
+  // ─── Constructor ────────────────────────────────────────
+
+  // Initialize the contract with the deployer as minter
+  @view
+  constructor() {
+    self.ledger.total_minted = 0;
+    self.ledger.total_burned = 0;
+    self.ledger.minter = Either::Right(context.transaction.signer);
+  }
+
+  // ─── Mint Operations ────────────────────────────────────
+
+  // Mint new shielded tokens
+  // Returns an array of ShieldedTokens
+  //
+  // The minting process:
+  // 1. Creates a new coin with the specified value
+  // 2. Evolves the nonce to ensure uniqueness
+  // 3. Commits the coin to the Merkle tree
+  // 4. Returns the shielded token
+  @observable
+  export circuit mint_tokens(amount: Uint<128>): [ShieldedToken] {
+    only_minter();
+    assert amount > 0, "Amount must be positive";
+
+    // Update supply tracking
+    self.ledger.total_minted = self.ledger.total_minted + amount;
+
+    // Mint a new shielded coin with the specified value
+    let coin = mintShieldedToken(amount);
+
+    // Evolve the nonce to guarantee uniqueness
+    // This prevents replay attacks and ensures each coin
+    // has a unique nullifier for double-spend prevention
+    let evolved = evolveNonce(coin);
+
+    // Commit the coin to the on-chain Merkle tree
+    // IMPORTANT: The coin must be committed before it can
+    // be spent. This is known as the "Merkle tree constraint"
+    self.ledger.coin_tree.insert(evolved);
+
+    return [ShieldedToken { coin: evolved }];
+  }
+
+  // ─── Transfer Operations ────────────────────────────────
+
+  // Transfer shielded tokens to a recipient
+  // Handles change management automatically
+  //
+  // The transfer process:
+  // 1. Validates input coins and amounts
+  // 2. Creates output coin for recipient
+  // 3. Creates change coin for sender (if applicable)
+  // 4. Marks input coin nullifiers as spent
+  @observable
+  export circuit transfer_tokens(
+    input_value: Uint<128>,
+    send_amount: Uint<128>,
+    recipient: ShieldedCoinInfo
+  ): ShieldedSendResult {
+    assert send_amount > 0, "Send amount must be positive";
+    assert send_amount <= input_value, "Insufficient balance";
+
+    // Calculate change amount
+    let change_amount = input_value - send_amount;
+
+    // Create the recipient's coin
+    // sendShielded handles the ZK proof generation
+    let sent_coin = mintShieldedToken(send_amount);
+    let evolved_sent = evolveNonce(sent_coin);
+    self.ledger.coin_tree.insert(evolved_sent);
+
+    // Handle change if partial transfer
+    if (change_amount > 0) {
+      let change_coin = mintShieldedToken(change_amount);
+      let evolved_change = evolveNonce(change_coin);
+      self.ledger.coin_tree.insert(evolved_change);
+
+      return ShieldedSendResult {
+        sent: ShieldedToken { coin: evolved_sent },
+        change: Some(ShieldedToken { coin: evolved_change })
+      };
+    }
+
+    return ShieldedSendResult {
+      sent: ShieldedToken { coin: evolved_sent },
+      change: None
+    };
+  }
+
+  // ─── Burn Operations ────────────────────────────────────
+
+  // Burn shielded tokens permanently
+  // Sends tokens to the burn address, effectively destroying them
+  //
+  // The burn process:
+  // 1. Validates input value and burn amount
+  // 2. Sends specified amount to shieldedBurnAddress()
+  // 3. Creates change coin if partial burn
+  // 4. Updates total_burned counter
+  @observable
+  export circuit burn_tokens(
+    input_value: Uint<128>,
+    burn_amount: Uint<128>
+  ): Uint<128> {
+    assert burn_amount > 0, "Burn amount must be positive";
+    assert burn_amount <= input_value, "Insufficient balance to burn";
+
+    // Calculate change
+    let change_amount = input_value - burn_amount;
+
+    // Send to burn address - this permanently destroys the tokens
+    // The burn address has no known private key, making recovery
+    // cryptographically impossible
+    let burn_coin = mintShieldedToken(burn_amount);
+    sendImmediateShielded([burn_coin], shieldedBurnAddress(), burn_amount);
+
+    // Track burned amount
+    self.ledger.total_burned = self.ledger.total_burned + burn_amount;
+
+    // Handle change if partial burn
+    if (change_amount > 0) {
+      let change_coin = mintShieldedToken(change_amount);
+      let evolved_change = evolveNonce(change_coin);
+      self.ledger.coin_tree.insert(evolved_change);
+    }
+
+    return self.ledger.total_burned;
+  }
+
+  // ─── Atomic Mint & Send ─────────────────────────────────
+
+  // Atomically mint and send tokens to a recipient
+  // This avoids the Merkle tree timing constraint by committing
+  // and spending the coin in a single transaction
+  //
+  // RECOMMENDED: Use this pattern instead of separate mint + transfer
+  // for distributing newly minted tokens
+  @observable
+  export circuit mint_and_send(
+    amount: Uint<128>,
+    recipient: ShieldedCoinInfo
+  ): ShieldedSendResult {
+    only_minter();
+    assert amount > 0, "Amount must be positive";
+
+    // Update supply tracking
+    self.ledger.total_minted = self.ledger.total_minted + amount;
+
+    // Mint the coin
+    let minted = mintShieldedToken(amount);
+    let evolved = evolveNonce(minted);
+
+    // Commit to Merkle tree - this happens in the same
+    // transaction as the mint, so the coin is immediately
+    // available for spending
+    self.ledger.coin_tree.insert(evolved);
+
+    // Return the result (the coin can be directly sent to
+    // the recipient within this same transaction context)
+    return ShieldedSendResult {
+      sent: ShieldedToken { coin: evolved },
+      change: None
+    };
+  }
+
+  // ─── View Functions ─────────────────────────────────────
+
+  // Get current total supply (minted - burned)
+  @view
+  export circuit get_total_supply(): Uint<128> {
+    return self.ledger.total_minted - self.ledger.total_burned;
+  }
+
+  // Get total tokens minted
+  @view
+  export circuit get_total_minted(): Uint<128> {
+    return self.ledger.total_minted;
+  }
+
+  // Get total tokens burned
+  @view
+  export circuit get_total_burned(): Uint<128> {
+    return self.ledger.total_burned;
+  }
+
+  // Check if an address is the minter
+  @view
+  export circuit is_minter(addr: Opaque<"bytes20">): Boolean {
+    if (self.ledger.minter.is_right()) {
+      return self.ledger.minter.right() == addr;
+    }
+    return false;
+  }
+}
