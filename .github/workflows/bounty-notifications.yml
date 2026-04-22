@@ -1,0 +1,45 @@
+name: Notify New Bounties
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  notify-bounty:
+    runs-on: ubuntu-latest
+    if: contains(github.event.label.name, 'bounty')
+    
+    steps:
+      - name: Extract bounty information
+        id: bounty_info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            return {
+              title: issue.title,
+              url: issue.html_url
+            };
+      
+      - name: Send Discord Notification
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          BOUNTY_INFO='${{ steps.bounty_info.outputs.result }}'
+          TITLE=$(echo "$BOUNTY_INFO" | jq -r '.title')
+          URL=$(echo "$BOUNTY_INFO" | jq -r '.url')
+          
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\": \"**New Bounty:** $TITLE\n$URL\"}" \
+            "$DISCORD_WEBHOOK"
+      
+      - name: Post Confirmation Comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `Bounty notification sent to Discord.`
+            });
