@@ -1,0 +1,54 @@
+name: Content Proposal
+description: Propose new articles, tutorials, or educational content for Midnight.
+title: "[Proposal]: "
+labels: ["content"]
+body:
+  - type: input
+    id: title
+    attributes:
+      label: Proposed Title
+      placeholder: e.g., "Advanced Zero-Knowledge Proofs in Midnight"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: content-type
+    attributes:
+      label: Content Type
+      description: What type of content are you proposing?
+      options:
+        - Technical Tutorial
+        - Blog Post / Article
+        - Video / Webinar
+        - Case Study
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary & Goal
+      description: Clearly describe your content proposal and its benefits to the community.
+      placeholder: What is the expected outcome or impact of this content?
+    validations:
+      required: true
+
+  - type: textarea
+    id: outline
+    attributes:
+      label: Outline / Draft
+      description: Provide a high-level outline or link to an existing draft if available.
+      placeholder: Section 1, Section 2...
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Acknowledgments
+      options:
+        - label: I have reviewed the [Contributing Guidelines](https://github.com/midnightntwrk/community-hub/blob/main/CONTRIBUTING.md).
+          required: true
+        - label: I am willing to collaborate with the Midnight team to develop this content.
+          required: true

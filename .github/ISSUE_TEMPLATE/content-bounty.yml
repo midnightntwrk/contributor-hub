@@ -1,0 +1,92 @@
+name: Content Bounty
+description: Submit work for a content bounty
+title: "[Bounty]: "
+labels: ["bounty", "content"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Bounty Submission
+        By submitting, you agree to the [Bounty Program Terms](../../legal/BOUNTY_TERMS.md).
+
+        **Reward:** Paid in NIGHT tokens after KYC verification.
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Terms Acknowledgment
+      options:
+        - label: I have read and agree to the [Bounty Program Terms](../../legal/BOUNTY_TERMS.md)
+          required: true
+        - label: I confirm I am not located in a sanctioned jurisdiction
+          required: true
+
+  - type: input
+    id: title
+    attributes:
+      label: Bounty Title
+      description: The title of the content you are submitting.
+      placeholder: e.g., "Getting Started with Midnight Smart Contracts"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: content-type
+    attributes:
+      label: Content Type
+      description: What type of content are you submitting?
+      options:
+        - Technical Tutorial
+        - Blog Post / Article
+        - Video / Webinar
+        - Case Study
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Briefly describe the content and how it benefits the Midnight community.
+      placeholder: What does this content cover and who is the target audience?
+    validations:
+      required: true
+
+  - type: input
+    id: bounty-issue
+    attributes:
+      label: Related Bounty Issue
+      description: Link to the original bounty issue this submission fulfills.
+      placeholder: "e.g., #123"
+    validations:
+      required: true
+
+  - type: textarea
+    id: deliverables
+    attributes:
+      label: Deliverables
+      description: List the deliverables or link to your pull request / draft.
+      placeholder: "Links to PRs, drafts, or other artifacts."
+    validations:
+      required: true
+
+  - type: input
+    id: wallet-address
+    attributes:
+      label: Wallet Address
+      description: Your wallet address for NIGHT token payout (after KYC verification).
+      placeholder: "e.g., 0x..."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: final-checks
+    attributes:
+      label: Final Checks
+      options:
+        - label: I have reviewed the [Contributing Guidelines](https://github.com/midnightntwrk/community-hub/blob/main/CONTRIBUTING.md).
+          required: true
+        - label: I understand that KYC verification via SumSub is required before payout.
+          required: true
