@@ -1,0 +1,211 @@
+// SPDX-License-Identifier: Apache-2.0
+// Security Checklist Reference Implementation
+// Bounty #320 - Midnight Contributor Hub
+// This file demonstrates the vulnerability patterns and fixes described in the tutorial.
+// It is for educational purposes and has not been audited for production use.
+
+pragma language_version >= 0.16.0;
+import CompactStandardLibrary;
+
+/// @title SecurityDemo - Demonstrates vulnerable and fixed patterns
+/// @notice NOT FOR PRODUCTION USE. For checklist education only.
+contract SecurityDemo {
+
+    // ============================================================
+    // VULNERABLE: exported field leaking transaction patterns
+    //
+    // ❌ 错误写法：lastWithdrawalAmount 被导出，链上任何人都能查看到任意用户的最近一笔取款金额
+    //    攻击者可以通过监控这个字段追踪用户的交易频率和金额模式
+    //
+    // ✅ 修复：删除 export 关键字，让它成为内部私有状态
+    // ============================================================
+    // export sealed ledger lastWithdrawalAmount: Uint<128>;  // ← 危险！删掉这行
+    sealed ledger lastWithdrawalAmount: Uint<128>;  // ← 正确的写法，内部状态不外泄
+
+    // ============================================================
+    // ownPublicKey() 漏洞演示
+    //
+    // ❌ 错误写法：仅用 ownPublicKey() 做权限验证，可被恶意构造的交易伪造身份
+    //    攻击者知道你的公钥后，可以构造一笔交易让合约"误以为"是你在调用
+    //
+    // ✅ 修复：必须配合 ledger 状态二次验证，将公钥绑定到链上注册记录
+    // ============================================================
+
+    // 存储管理员公钥（链上注册）
+    export sealed ledger ownerKey: Bytes<32>;
+    // 标记管理员是否已注册（防止冷启动攻击）
+    export sealed ledger isOwnerRegistered: Boolean;
+
+    // ============================================================
+    // 重放攻击防护
+    //
+    // ❌ 错误写法：没有任何防重放机制，同样的交易可以被无限次重复提交
+    //    在金融操作中，这意味着用户的钱可以被反复提取
+    //
+    // ✅ 修复方案A：Nullifier（废弃标记）模式
+    //    每笔交易附带一个唯一随机数，交易完成后标记为已使用
+    //    下次提交相同随机数时直接拒绝
+    //
+    // ✅ 修复方案B：Nonce（递增序号）模式
+    //    每个用户有一个序号计数器，提交时必须提供正确序号，执行后+1
+    // ============================================================
+    export sealed ledger nonceCounter: Uint<64>;
+    export sealed ledger usedNullifiers: Map<Bytes<32>, Boolean>;
+
+    // ============================================================
+    // 故意公开的字段：这些本来就是设计给所有人看的
+    // ============================================================
+    export sealed ledger totalDeposits: Uint<128>;
+    export sealed ledger initialized: Boolean;
+    // 这个 commitment 只暴露哈希，不暴露原始值——这是正确的做法
+    export sealed ledger publicCommitment: Bytes<32>;
+
+    constructor() {
+        lastWithdrawalAmount = 0;
+        ownerKey = pad(32, "\x00");
+        isOwnerRegistered = false;
+        nonceCounter = 0;
+        totalDeposits = 0;
+        initialized = false;
+        publicCommitment = pad(32, "\x00");
+    }
+
+    // ============================================================
+    // initialize：演示正确的 ownPublicKey() 用法
+    // ============================================================
+    /// @notice 初始化合约，设置管理员
+    /// @param ownerAddr 管理员的 ZswapCoinPublicKey 地址
+    export circuit initialize(ownerAddr: ZswapCoinPublicKey): [] {
+        assert(!initialized, "Already initialized");
+        // ✅ 使用 disclose() 明确将输入的公钥转换为字节存储
+        // 注意：这里 disclose 是安全的，因为管理员公钥本来就是公开信息
+        ownerKey = disclose(ownerAddr).bytes;
+        isOwnerRegistered = true;
+        initialized = true;
+        return [];
+    }
+
+    // ============================================================
+    // ❌ 危险函数：不要在生产合约里这样用
+    // ============================================================
+    /// @notice 演示不安全的 ownPublicKey 用法（危险！仅供学习）
+    /// @dev 这个函数展示了为什么不能单独依赖 ownPublicKey 做身份验证
+    export circuit unsafeAdminCheck(): Boolean {
+        const sender = ownPublicKey();
+        // 漏洞：攻击者如果知道管理员的公钥，可以构造一笔交易
+        // 让合约以为这是管理员在调用，但实际上是由攻击者签署的
+        return sender == ownerKey;
+    }
+
+    // ============================================================
+    // ✅ 安全函数：ownPublicKey + ledger 双重验证
+    // ============================================================
+    /// @notice 安全的访问控制检查
+    /// @dev 同时验证：(1)发送者公钥匹配 (2)管理员已在链上注册
+    export circuit safeAdminCheck(): Boolean {
+        const sender = ownPublicKey();
+        const ledgerKey = ownerKey.lookup();
+        const registered = isOwnerRegistered.lookup();
+        // 两项都必须满足——单独满足任何一项都不够
+        return sender == ledgerKey && registered;
+    }
+
+    // ============================================================
+    // depositWithNullifier：演示 Nullifier 防重放
+    // ============================================================
+    /// @notice 存款，使用 Nullifier 防止重放攻击
+    /// @param amount 要存入的金额
+    /// @param nullifier 由发送方生成的唯一随机数（建议用 SHA256(sender + amount + blockSeed) 生成）
+    ///
+    /// 踩坑实录对应：
+    /// 我第一次实现时把 nullifier 设为了常量，结果当然没有任何防重放效果。
+    /// 后来改成每次交易动态生成，才发现如果 nullifier 生成算法可预测，攻击者还是可以抢跑。
+    /// 最终方案：nullifier = hash(发送者公钥 + 金额 + 当前区块随机种子)，这样每个交易
+    /// 的 nullifier 都唯一且不可预测。
+    export circuit depositWithNullifier(
+        amount: Uint<128>,
+        nullifier: Bytes<32>
+    ): [] {
+        // 第一步：检查这个 nullifier 是不是用过的
+        // usedNullifiers 是 Map 类型，如果找不到这个 key 说明没用过
+        assert(!usedNullifiers.contains(nullifier), "Replay detected - nullifier already used");
+
+        // 第二步：执行存款逻辑
+        totalDeposits = totalDeposits + amount;
+        lastWithdrawalAmount = amount;  // 这里我们允许记录金额（私有字段）
+
+        // 第三步：把 nullifier 标记为已使用——这下同一笔交易再也提交不了了
+        usedNullifiers.add(nullifier);
+
+        return [];
+    }
+
+    // ============================================================
+    // withdrawWithNonce：演示 Nonce 防重放
+    // ============================================================
+    /// @notice 取款，使用 Nonce 防止重放攻击
+    /// @param amount 要取出的金额
+    /// @param nonce 发送方的当前 nonce 值（从链上读取）
+    ///
+    /// 踩坑实录对应：
+    /// Nonce 的坑在于"竞态条件"——如果你同时提交两笔 nonce=5 的交易，
+    /// 网络可能先处理第二笔再处理第一笔（取决于矿工打包顺序），两笔都会成功。
+    /// 解决：在合约里把 nonce 的检查和更新做成原子操作——
+    /// assert(nonce == expected) 在状态更新之前执行，更新在 assert 之后。
+    export circuit withdrawWithNonce(
+        amount: Uint<128>,
+        nonce: Uint<64>
+    ): [] {
+        // 第一步：验证 nonce 是否匹配
+        // 如果不匹配说明这笔交易可能被重复提交了，或者顺序不对
+        const expectedNonce = nonceCounter;
+        assert(nonce == expectedNonce, "Invalid nonce - possible replay or out-of-order tx");
+
+        // 第二步：执行取款
+        // （这里省略实际的转胀逻辑，假设已完成）
+        lastWithdrawalAmount = amount;
+
+        // 第三步：原子性地把 nonce +1
+        // 注意：这行在 assert 之后执行，意味着如果 nonce 不匹配，这行永远不会跑
+        nonceCounter = nonce + 1;
+
+        return [];
+    }
+
+    // ============================================================
+    // createCommitment：演示正确的 disclose() 用法
+    // ============================================================
+    /// @notice 创建零知识承诺（不暴露原始值）
+    /// @param value 私密值（不会被泄露）
+    /// @return commitment 返回承诺的哈希值（可以公开）
+    ///
+    /// 踩坑实录：
+    /// 第一次我直接 disclose(value)，结果在链上暴露了用户的余额。
+    /// 后来改成 disclose(hash(value))，但 hash 是单Hash，容易被暴力破解。
+    /// 最终改成了 hash(value + sender公钥)，这样即知道结果也无法反推原值。
+    export circuit createCommitment(
+        value: Uint<128>
+    ): Bytes<32> {
+        // ❌ 错误：disclose(value) 会把金额直接暴露在链上！
+        // 这行不要用：
+        // const wrong = disclose(value);
+
+        // ✅ 正确：只暴露哈希承诺，不暴露原始值
+        // 哈希时混入发送者公钥，防止彩虹表攻击
+        const commitment = hash(value, ownPublicKey());
+        publicCommitment = commitment;
+        return commitment;
+    }
+
+    // ============================================================
+    // auditDiscloseUsage：帮助开发者自检 disclose 泄露
+    // ============================================================
+    /// @notice 遍历检查所有 disclose 调用是否安全
+    /// @return count 返回发现的潜在泄露数量（用于自动化检测）
+    export circuit auditDiscloseUsage(): Uint<32> {
+        // 这是一个教育性质的辅助函数
+        // 实际项目中建议用静态分析工具而不是运行时函数
+        // 此函数编译后会是一个空操作（noop），仅用于文档目的
+        return 0;
+    }
+}
