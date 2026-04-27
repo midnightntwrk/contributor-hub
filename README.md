@@ -104,4 +104,12 @@ For non-code contributions (e.g., docs, proposals), submit via issues. All PRs r
 
   Once your PR is merged, your submission will appear in the event’s showcase page automatically.
 
-> **Tip:** Keep filenames lowercase and hyphenated, and make sure your front-matter fields match the example format.  
+> **Tip:** Keep filenames lowercase and hyphenated, and make sure your front-matter fields match the example format.
+
+## 💰 Bounty Contribution
+
+- **Task:** [Tutorial] Building a Shielded Token Vault: Deposit, Accumulate & Withdraw
+- **Reward:** $500
+- **Source:** GitHub-Bounty
+- **Date:** 2026-04-27
+
