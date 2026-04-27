@@ -30,6 +30,8 @@ If you are participating in a Midnight event (such as **Hacktoberfest** or the *
 2.  Create a Markdown file in the specific event sub-folder (e.g., `events/hacktoberfest-2025/your-handle.md`).
 3.  Fill out the submission template found in the `events/README.md`.
 
+For tutorials on acquiring NIGHT tokens, see: [Getting NIGHT Tokens: Exchanges, Bridging & Wallet Funding on Mainnet](events/hacktoberfest/getting-night-tokens.md)
+
 ## Bounty Programs
 
 We run content and development bounties rewarded in NIGHT tokens. All participants must complete KYC verification before receiving tokens.

@@ -59,5 +59,9 @@ Podcasts or interviews
 Social media campaigns
 Blog or video content
 Graphic design or visual assets
+
+## Tutorial Resources
+For tutorials on acquiring NIGHT tokens, see: [Getting NIGHT Tokens: Exchanges, Bridging & Wallet Funding on Mainnet](./getting-night-tokens.md)
+
 Ready to start contributing?
 Explore open issues on the Midnight Community Hub and make your mark this Hacktoberfest!
