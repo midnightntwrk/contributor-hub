@@ -5,10 +5,13 @@ This document compares the privacy features of Monero and Midnight.
 
 ## Core Privacy Model
 
-| Cryptocurrency | Privacy Technique |
-|----------------|-------------------|
-| Monero         | Ring signatures, Confidential transactions, RingCT |
-| Midnight       | zk-SNARKs         |
+| Cryptocurrency | Consensus | TPS | Fees | Proof Size | Privacy Technique |
+|----------------|-----------|-----|------|------------|-------------------|
+| Monero         | PoW       | 1,700 | Low  | ~1KB       | Ring signatures, Confidential transactions, RingCT |
+| Zcash          | PoS (NU5 Upgrade) | 2,000 | Medium | ~1KB | zk-SNARKs |
+| Aleo           | PoS       | 5,000+ | Low  | ~1KB       | zk-SNARKs/Leo |
+| Aztecc         | L2 Rollup | 10,000+ | Very Low | <1KB | zk-SNARKs/Noir |
+| Midnight       | PoS       | 2,500 | Low  | ~1KB       | zk-SNARKs |
 
 ## Transaction Privacy
 
