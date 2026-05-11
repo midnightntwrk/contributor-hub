@@ -1,0 +1,154 @@
+// This file is part of midnightntwrk/contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+pragma language_version >= 0.20;
+
+import CompactStandardLibrary;
+
+export ledger mintedOperations: Counter;
+export ledger totalBurned: Uint<128>;
+
+constructor() {
+  totalBurned = 0;
+}
+
+witness localNonceSeed(): Bytes<32>;
+
+export circuit mint_to_contract(
+  domainSep: Bytes<32>,
+  value: Uint<64>,
+  nonce: Bytes<32>
+): ShieldedCoinInfo {
+  assert(disclose(value) > 0, "mint amount must be non-zero");
+
+  const coin = mintShieldedToken(
+    disclose(domainSep),
+    disclose(value),
+    disclose(nonce),
+    right<ZswapCoinPublicKey, ContractAddress>(kernel.self())
+  );
+
+  mintedOperations.increment(1);
+  return coin;
+}
+
+export circuit mint_with_local_nonce(
+  domainSep: Bytes<32>,
+  value: Uint<64>,
+  nonceIndex: Uint<128>
+): ShieldedCoinInfo {
+  assert(disclose(value) > 0, "mint amount must be non-zero");
+
+  const nonce = disclose(evolveNonce(disclose(nonceIndex), localNonceSeed()));
+  const coin = mintShieldedToken(
+    disclose(domainSep),
+    disclose(value),
+    nonce,
+    right<ZswapCoinPublicKey, ContractAddress>(kernel.self())
+  );
+
+  mintedOperations.increment(1);
+  return coin;
+}
+
+export circuit send_committed(
+  input: QualifiedShieldedCoinInfo,
+  recipient: ZswapCoinPublicKey,
+  value: Uint<128>
+): ShieldedSendResult {
+  assert(disclose(value) > 0, "send amount must be non-zero");
+  assert(disclose(input).value >= disclose(value), "send amount exceeds coin value");
+
+  return sendShielded(
+    disclose(input),
+    left<ZswapCoinPublicKey, ContractAddress>(disclose(recipient)),
+    disclose(value)
+  );
+}
+
+export circuit burn_committed(
+  input: QualifiedShieldedCoinInfo,
+  value: Uint<128>
+): ShieldedSendResult {
+  assert(disclose(value) > 0, "burn amount must be non-zero");
+  assert(disclose(input).value >= disclose(value), "burn amount exceeds coin value");
+
+  const result = sendShielded(
+    disclose(input),
+    shieldedBurnAddress(),
+    disclose(value)
+  );
+
+  totalBurned = (totalBurned + disclose(value)) as Uint<128>;
+  return result;
+}
+
+export circuit burn_fresh(
+  domainSep: Bytes<32>,
+  mintValue: Uint<64>,
+  mintNonce: Bytes<32>,
+  burnValue: Uint<128>
+): ShieldedSendResult {
+  assert(disclose(mintValue) > 0, "mint amount must be non-zero");
+  assert(disclose(burnValue) > 0, "burn amount must be non-zero");
+
+  const coin = mintShieldedToken(
+    disclose(domainSep),
+    disclose(mintValue),
+    disclose(mintNonce),
+    right<ZswapCoinPublicKey, ContractAddress>(kernel.self())
+  );
+
+  assert(coin.value >= disclose(burnValue), "burn amount exceeds minted value");
+
+  const result = sendImmediateShielded(
+    coin,
+    shieldedBurnAddress(),
+    disclose(burnValue)
+  );
+
+  mintedOperations.increment(1);
+  totalBurned = (totalBurned + disclose(burnValue)) as Uint<128>;
+  return result;
+}
+
+export circuit mint_and_send(
+  domainSep: Bytes<32>,
+  mintValue: Uint<64>,
+  mintNonce: Bytes<32>,
+  recipient: ZswapCoinPublicKey,
+  sendValue: Uint<128>
+): ShieldedSendResult {
+  assert(disclose(mintValue) > 0, "mint amount must be non-zero");
+  assert(disclose(sendValue) > 0, "send amount must be non-zero");
+
+  const coin = mintShieldedToken(
+    disclose(domainSep),
+    disclose(mintValue),
+    disclose(mintNonce),
+    right<ZswapCoinPublicKey, ContractAddress>(kernel.self())
+  );
+
+  assert(coin.value >= disclose(sendValue), "send amount exceeds minted value");
+
+  const result = sendImmediateShielded(
+    coin,
+    left<ZswapCoinPublicKey, ContractAddress>(disclose(recipient)),
+    disclose(sendValue)
+  );
+
+  mintedOperations.increment(1);
+  return result;
+}

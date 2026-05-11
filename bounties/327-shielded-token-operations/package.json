@@ -1,0 +1,16 @@
+{
+  "name": "midnight-bounty-327-shielded-token-operations",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "compact": "compact compile src/shielded-token-lifecycle.compact ./src/managed/shielded-token-lifecycle",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}
