@@ -1,71 +1,182 @@
-<!--
-This file is part of midnightntwrk/contributor-hub.
-Copyright (C) 2025 Midnight Foundation
-SPDX-License-Identifier: Apache-2.0
-Licensed under the Apache License, Version 2.0 (the "License");
-You may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+# Build shielded token mint, transfer, and burn flows in Compact
 
-http://www.apache.org/licenses/LICENSE-2.0
+Shielded tokens let Midnight applications move value while keeping sensitive
+transaction details private. In this tutorial, you will build a small Compact
+project that mints shielded value, transfers it, burns it, and verifies the
+full lifecycle with a Vitest test suite.
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
--->
+The core idea is simple but important: a newly minted shielded coin is not yet a
+committed ledger coin. Fresh coins use `ShieldedCoinInfo` and can be spent
+immediately with `sendImmediateShielded`. Coins that already exist in the ledger
+use `QualifiedShieldedCoinInfo`, which includes the Merkle tree index required
+by `sendShielded`.
 
-# Shielded Token Operations: Mint, Transfer, Burn, and Tests
+You will use that distinction to build three practical flows: minting to the
+current contract, transferring committed value to a user, and burning both fresh
+and committed shielded value. Along the way, you will also handle change outputs
+and nonce derivation, two details that matter in real wallet and DApp code.
 
-This tutorial walks through a small Compact contract that demonstrates a full
-shielded token lifecycle on Midnight: minting a shielded coin, spending it to a
-recipient, returning change, burning shielded value, and testing the edge cases
-that matter for production code. The companion code lives in this directory and
-is organized as a minimal package that can be installed, typechecked, tested
-with Vitest, and compiled with the Midnight Compact toolchain.
+By the end of this tutorial, you will:
 
-The examples focus on contract-owned shielded coins. A contract mints a shielded
-token to itself, later spends the committed coin with `sendShielded`, and uses
-`ShieldedSendResult.change` to keep track of any remaining value. The same
-contract also demonstrates the immediate path: when a coin is created and spent
-inside the same transaction, it is a `ShieldedCoinInfo`, not a
-`QualifiedShieldedCoinInfo`, so the correct helper is `sendImmediateShielded`.
-This distinction is the main trap in this topic.
+- Create a Compact contract that mints shielded tokens to itself.
+- Use `evolveNonce` to derive mint nonces safely.
+- Transfer committed shielded coins with `sendShielded`.
+- Burn committed and freshly minted coins with `shieldedBurnAddress`.
+- Use `sendImmediateShielded` for coins created in the same transaction.
+- Write Vitest tests for minting, transfers, burns, change, nonce reuse, and the
+  Merkle timing rule.
 
-## Project shape
+## Prerequisites
 
-The package contains four important files:
+You need:
 
-- `src/shielded-token-lifecycle.compact` contains the Compact circuits.
-- `src/witnesses.ts` implements local private state for nonce seed management.
-- `src/model/shielded-token-model.ts` mirrors the shielded-token rules for
-  deterministic unit tests.
-- `test/shielded-token-lifecycle.test.ts` covers mint, transfer, burn, change,
-  nonce evolution, and Merkle timing.
+- Node.js 20 or newer.
+- npm.
+- The Midnight Compact toolchain.
+- Basic TypeScript knowledge.
+- Basic familiarity with Compact circuits and ledgers.
 
-Install the package and run the tests:
+Install or update the Compact toolchain from the Midnight documentation, then
+check that the command is available:
 
 ```bash
-npm install
-npm run typecheck
-npm test
+compact check
 ```
 
-Compile the Compact contract after installing the Midnight Compact toolchain:
+Expected result:
+
+```text
+compact: Latest version available: ...
+```
+
+On Windows, run the Compact toolchain from WSL or make sure the Midnight
+`compact` binary appears before `C:\Windows\System32\compact.exe` in your
+`PATH`. Windows also has a system command named `compact`, and that command is
+not the Midnight compiler.
+
+## What you will build
+
+The finished demo project has this structure:
+
+```text
+shielded-token-operations/
+|-- package.json
+|-- tsconfig.json
+|-- src/
+|   |-- shielded-token-lifecycle.compact
+|   |-- witnesses.ts
+|   `-- model/
+|       `-- shielded-token-model.ts
+`-- test/
+    `-- shielded-token-lifecycle.test.ts
+```
+
+The Compact file contains the contract. The witness file manages local nonce
+state. The TypeScript model gives you deterministic tests without needing a live
+node. The Vitest file proves the flows and catches the mistakes developers tend
+to make when they mix fresh and committed shielded coins.
+
+## Part 0: Choose the right shielded API
+
+Before writing code, map each operation to the correct standard library helper.
+Most bugs in shielded token examples come from choosing the right idea but the
+wrong helper.
+
+Use `mintShieldedToken` when the contract creates a new shielded token. It
+returns `ShieldedCoinInfo`, which describes a fresh output from the current
+transaction.
+
+Use `sendImmediateShielded` when that fresh output is spent in the same
+transaction. This is the right tool for atomic flows such as mint-and-send or
+mint-and-burn.
+
+Use `sendShielded` when the coin already exists in the ledger. This requires
+`QualifiedShieldedCoinInfo`, not plain `ShieldedCoinInfo`, because the committed
+coin must include its Merkle tree position.
+
+Use `shieldedBurnAddress()` when the send target should destroy the shielded
+value. Burning is not a separate token primitive in this example; it is a send
+to a special recipient.
+
+Keep this decision table nearby while building:
+
+```text
+Operation                      Input coin type              Helper
+Mint new shielded value        none                         mintShieldedToken
+Spend fresh minted value       ShieldedCoinInfo             sendImmediateShielded
+Spend later committed value    QualifiedShieldedCoinInfo    sendShielded
+Burn fresh minted value        ShieldedCoinInfo             sendImmediateShielded + shieldedBurnAddress
+Burn committed value           QualifiedShieldedCoinInfo    sendShielded + shieldedBurnAddress
+```
+
+The tutorial code follows this table exactly. If you change the API shape later,
+re-run the tests that check immediate sends and Merkle timing.
+
+## Part 1: Create the package
+
+Create a folder for the demo project:
 
 ```bash
-npm run compact
+mkdir shielded-token-operations
+cd shielded-token-operations
 ```
 
-On Windows, be careful with the command name. Windows ships a system utility
-named `compact.exe` for filesystem compression. If that binary appears before
-the Midnight toolchain in `PATH`, `npm run compact` will call the wrong program.
-Using WSL or adjusting `PATH` avoids that collision.
+Initialize the package:
 
-## Compact contract structure
+```bash
+npm init -y
+```
 
-The contract starts like current Midnight examples: no wrapper object, a language
-version pragma, and an import of the standard library.
+Install the test and TypeScript dependencies:
+
+```bash
+npm install --save-dev typescript vitest @types/node
+```
+
+Update `package.json` with these scripts:
+
+```json
+{
+  "scripts": {
+    "compact": "compact compile src/shielded-token-lifecycle.compact ./src/managed/shielded-token-lifecycle",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}
+```
+
+Create `tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "types": ["node", "vitest"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}
+```
+
+This setup lets you run fast local tests while still keeping a direct Compact
+compile command for the smart contract.
+
+## Part 2: Write the Compact contract
+
+Create the source folder:
+
+```bash
+mkdir -p src
+touch src/shielded-token-lifecycle.compact
+```
+
+Start the contract with the language pragma, the standard library import, and
+two public ledger fields:
 
 ```compact
 pragma language_version >= 0.20;
@@ -80,44 +191,22 @@ constructor() {
 }
 ```
 
-`mintedOperations` is a simple counter so tests and users can see that a minting
-path was executed. `totalBurned` records the amount that the contract has sent
-to the shielded burn address. This is not meant to replace chain accounting, but
-it is useful application state for a tutorial because it makes the burn path
-observable.
+`mintedOperations` is a simple counter used by the example. `totalBurned`
+records the amount this contract has intentionally sent to the shielded burn
+address.
 
-The contract also declares one witness:
+Next, add a witness for local nonce seed management:
 
 ```compact
 witness localNonceSeed(): Bytes<32>;
 ```
 
-The witness returns a private local seed. The Compact circuit can combine that
-seed with a public index by calling `evolveNonce(index, nonce)`. This pattern
-keeps nonce generation deterministic while making accidental nonce reuse easier
-to avoid. A production app should persist its private state and should never
-reset the seed/index pair in a way that reuses the same nonce for the same token
-domain.
+The witness value is private state supplied by the TypeScript layer. The
+contract will combine it with a public nonce index using `evolveNonce`.
 
-## Minting shielded tokens
+## Part 3: Mint shielded tokens
 
-The standard library function used for minting is:
-
-```compact
-mintShieldedToken(
-  domainSep: Bytes<32>,
-  value: Uint<64>,
-  nonce: Bytes<32>,
-  recipient: Either<ZswapCoinPublicKey, ContractAddress>
-): ShieldedCoinInfo
-```
-
-The returned `ShieldedCoinInfo` describes a newly created shielded output. It
-has a `nonce`, `color`, and `value`. The `color` is the token type derived from
-the domain separator and contract address. The `nonce` must be unique for secure
-operation.
-
-The tutorial contract exposes an explicit mint function:
+Add a circuit that mints directly to the current contract:
 
 ```compact
 export circuit mint_to_contract(
@@ -139,13 +228,19 @@ export circuit mint_to_contract(
 }
 ```
 
-The recipient is `right<ZswapCoinPublicKey, ContractAddress>(kernel.self())`,
-which means the shielded output is addressed to the current contract. This is
-the important choice for the rest of the tutorial: the contract can later spend
-that coin after it is committed on-chain and referenced as a
-`QualifiedShieldedCoinInfo`.
+`mintShieldedToken` returns a `ShieldedCoinInfo`. That is a fresh output. It has
+a nonce, color, and value, but it does not have a Merkle index yet.
 
-There is also a nonce-managed mint:
+The recipient is:
+
+```compact
+right<ZswapCoinPublicKey, ContractAddress>(kernel.self())
+```
+
+That means the new shielded coin belongs to the current contract. This is useful
+when the contract should later spend the coin after it appears in the ledger.
+
+Now add a second minting circuit that derives its nonce:
 
 ```compact
 export circuit mint_with_local_nonce(
@@ -168,68 +263,15 @@ export circuit mint_with_local_nonce(
 }
 ```
 
-The point is not that every application must use exactly this API. The point is
-that the nonce policy should be explicit. Passing arbitrary nonces from a UI is
-easy to demo and easy to get wrong. Passing an index and deriving the nonce from
-a private seed gives the application a clear place to enforce monotonic use. The
-`disclose(...)` wrapper around the evolved nonce is intentional. Compact tracks
-values derived from witnesses, and a minted coin returns a nonce-derived output.
-By disclosing the evolved nonce, the contract declares that this obfuscated
-derived value may be visible without disclosing the raw witness seed itself.
+`evolveNonce` takes an index and a prior nonce/seed. The `disclose(...)` wrapper
+around the evolved nonce is intentional. Compact treats witness-derived values
+as private by default, and a minted coin returns nonce-derived data. This wrapper
+declares that the derived nonce value may be used in that public-facing result
+without disclosing the raw witness seed.
 
-## TypeScript witness implementation
+## Part 4: Transfer a committed shielded coin
 
-The witness implementation in `src/witnesses.ts` defines the private state shape:
-
-```ts
-export type ShieldedTokenPrivateState = {
-  readonly nonceSeed: Uint8Array;
-  readonly nextNonceIndex: bigint;
-};
-```
-
-It also exports a constructor for the state and a `witnesses` object with a
-`localNonceSeed` implementation:
-
-```ts
-export const witnesses = {
-  localNonceSeed: ({ privateState }) => [
-    {
-      nonceSeed: privateState.nonceSeed,
-      nextNonceIndex: privateState.nextNonceIndex + 1n,
-    },
-    privateState.nonceSeed,
-  ],
-};
-```
-
-The returned tuple follows the generated Compact runtime pattern: first the next
-private state, then the witness value returned to the circuit. The circuit still
-takes a `nonceIndex` parameter. Keeping the index visible in the circuit makes
-tests and callers explicit about which nonce should be used for a mint, while the
-private state gives the UI or service layer a way to track local progress.
-
-## Sending committed shielded coins
-
-The standard library distinguishes fresh shielded coins from committed shielded
-coins. `ShieldedCoinInfo` is a new coin, usually created in the current
-transaction. `QualifiedShieldedCoinInfo` is a coin that already exists in the
-ledger and includes a Merkle tree position:
-
-```compact
-struct QualifiedShieldedCoinInfo {
-  nonce: Bytes<32>;
-  color: Bytes<32>;
-  value: Uint<128>;
-  mtIndex: Uint<64>;
-}
-```
-
-That `mtIndex` is load-bearing. The Merkle index is what lets the transaction
-prove which committed coin is being spent. A fresh output from
-`mintShieldedToken` does not have this index yet.
-
-The committed send circuit therefore accepts a `QualifiedShieldedCoinInfo`:
+Add a committed transfer circuit:
 
 ```compact
 export circuit send_committed(
@@ -248,7 +290,20 @@ export circuit send_committed(
 }
 ```
 
-The result is a `ShieldedSendResult`:
+The input type matters. `sendShielded` spends a `QualifiedShieldedCoinInfo`.
+That type represents an existing shielded coin in the ledger. It includes the
+Merkle tree position:
+
+```compact
+struct QualifiedShieldedCoinInfo {
+  nonce: Bytes<32>;
+  color: Bytes<32>;
+  value: Uint<128>;
+  mtIndex: Uint<64>;
+}
+```
+
+The result type is `ShieldedSendResult`:
 
 ```compact
 struct ShieldedSendResult {
@@ -257,25 +312,17 @@ struct ShieldedSendResult {
 }
 ```
 
-When the input value is larger than the send value, `change` contains a new
-contract-owned `ShieldedCoinInfo`. The application must not forget this value.
-The change output is how the remaining balance continues to exist. If the input
-is exactly consumed, `change` is empty.
+If you send the full input value, `change` is empty. If you send less than the
+input value, `change` contains a new contract-owned shielded coin. Your
+application must keep track of that change output, wait for it to be committed,
+and later spend it as a qualified coin.
 
-Tests should verify both cases. The suite includes one test that sends `35` out
-of a `100` value coin and expects `65` of change, and another that sends exactly
-`100` and expects no change.
+## Part 5: Burn shielded tokens
 
-## Burning shielded value
+Burning is a send to the special burn recipient returned by
+`shieldedBurnAddress()`.
 
-The standard library exposes a special burn recipient:
-
-```compact
-shieldedBurnAddress(): Either<ZswapCoinPublicKey, ContractAddress>
-```
-
-Any shielded coins sent to that address are burned. The committed burn circuit
-is a small variant of the committed send path:
+Add a committed burn circuit:
 
 ```compact
 export circuit burn_committed(
@@ -296,12 +343,11 @@ export circuit burn_committed(
 }
 ```
 
-The burn result can also include change. Burning `40` out of a `90` value coin
-creates a burned output of `40` and a contract-owned change output of `50`. That
-change output must be committed before it can be spent by a later `sendShielded`
-call.
+This works like a committed transfer, except the recipient is the burn address.
+The result can still include change. Burning `40` from a `90` value coin burns
+`40` and returns `50` as change.
 
-Fresh burns use a different helper:
+Now add a fresh burn circuit:
 
 ```compact
 export circuit burn_fresh(
@@ -310,6 +356,9 @@ export circuit burn_fresh(
   mintNonce: Bytes<32>,
   burnValue: Uint<128>
 ): ShieldedSendResult {
+  assert(disclose(mintValue) > 0, "mint amount must be non-zero");
+  assert(disclose(burnValue) > 0, "burn amount must be non-zero");
+
   const coin = mintShieldedToken(
     disclose(domainSep),
     disclose(mintValue),
@@ -331,16 +380,13 @@ export circuit burn_fresh(
 }
 ```
 
-`sendImmediateShielded` is specifically for coins created in the current
-transaction. No Merkle index is required because the coin has not needed to be
-looked up as a previously committed input.
+Use `sendImmediateShielded` here because the coin was created in the same
+transaction. It has not been committed yet, so it cannot be spent with
+`sendShielded`.
 
-## Atomic mint and send
+## Part 6: Add atomic mint and send
 
-The same immediate rule applies to atomic mint-and-send. If the contract mints a
-coin and sends part of it to a user in the same circuit, it should not pretend
-the fresh coin has an existing Merkle position. It can directly call
-`sendImmediateShielded`:
+Atomic mint-and-send is the same fresh-coin pattern. Add this circuit:
 
 ```compact
 export circuit mint_and_send(
@@ -350,6 +396,9 @@ export circuit mint_and_send(
   recipient: ZswapCoinPublicKey,
   sendValue: Uint<128>
 ): ShieldedSendResult {
+  assert(disclose(mintValue) > 0, "mint amount must be non-zero");
+  assert(disclose(sendValue) > 0, "send amount must be non-zero");
+
   const coin = mintShieldedToken(
     disclose(domainSep),
     disclose(mintValue),
@@ -370,59 +419,160 @@ export circuit mint_and_send(
 }
 ```
 
-This circuit is useful for onboarding flows, reward distribution, or any case
-where a contract creates shielded value and immediately passes some of it to a
-recipient. If `mintValue` is larger than `sendValue`, the returned change should
-be kept by the contract and committed before a future committed spend.
+This circuit mints to the contract and immediately sends part or all of the
+fresh coin to a user public key. If `mintValue` is larger than `sendValue`, the
+returned change belongs to the contract.
 
-## Merkle timing pitfall
+## Part 7: Add the TypeScript witness
 
-The most common mistake is trying to spend a freshly minted `ShieldedCoinInfo`
-with `sendShielded` in a later operation without first obtaining its
-`mtIndex`. A coin created in transaction A is only spendable by `sendShielded`
-after transaction A is included and the output can be referenced from the Merkle
-tree. Before that point, it is just a fresh output.
+Create the witness file:
 
-There are three safe paths:
+```bash
+touch src/witnesses.ts
+```
 
-1. Mint now, wait until the coin is committed, then spend it as a
-   `QualifiedShieldedCoinInfo` with `sendShielded`.
-2. Mint and spend inside the same transaction with `sendImmediateShielded`.
-3. Mint and burn inside the same transaction with `sendImmediateShielded` and
-   `shieldedBurnAddress()`.
+Add a private state type and a witness implementation:
 
-The test model enforces this distinction. If a test passes a fresh
-`ShieldedCoinInfo` into `sendShielded`, it throws an error that mentions
-`mtIndex`. The positive committed path calls `commit(coin)` first, which returns
-a `QualifiedShieldedCoinInfo`.
+```ts
+import { createHash } from "node:crypto";
 
-## Test suite design
+export type ShieldedTokenPrivateState = {
+  readonly nonceSeed: Uint8Array;
+  readonly nextNonceIndex: bigint;
+};
 
-The Vitest suite uses a deterministic TypeScript model rather than talking to a
-live network. This makes the tests fast and focused on lifecycle semantics. The
-model is intentionally shaped like the Compact standard library types:
+type WitnessContext<PrivateState> = {
+  readonly privateState: PrivateState;
+};
 
-- `ShieldedCoinInfo` has `nonce`, `color`, `value`, and a test-only recipient.
-- `QualifiedShieldedCoinInfo` extends it with `mtIndex`.
-- `ShieldedSendResult` has `sent` and nullable `change`.
+export const createShieldedTokenPrivateState = (
+  nonceSeed = hashBytes32("shielded-token:demo-seed"),
+): ShieldedTokenPrivateState => ({
+  nonceSeed,
+  nextNonceIndex: 0n,
+});
 
-The suite covers:
+export const witnesses = {
+  localNonceSeed: ({ privateState }: WitnessContext<ShieldedTokenPrivateState>) => [
+    {
+      nonceSeed: privateState.nonceSeed,
+      nextNonceIndex: privateState.nextNonceIndex + 1n,
+    },
+    privateState.nonceSeed,
+  ],
+};
 
-- Minting a shielded coin to the contract and preserving token color.
-- Deterministic nonce derivation with `evolveNonce`.
-- Local nonce seed use through `mintWithLocalNonce`.
-- Rejection when `sendShielded` receives a fresh coin without `mtIndex`.
-- Partial sends that produce change.
-- Exact sends that produce no change.
-- Overspending rejection.
-- Zero-value rejection.
-- Committed burns through `shieldedBurnAddress`.
-- Fresh burns through `sendImmediateShielded`.
-- Atomic `mint_and_send`.
-- Spending change after it is committed.
-- Color preservation across send, burn, and change outputs.
+export function hashBytes32(input: string): Uint8Array {
+  return createHash("sha256").update(input).digest();
+}
+```
 
-This is the key test for Merkle timing:
+The witness returns the nonce seed to Compact and advances local private state.
+In a production DApp, persist this private state. Do not reset it casually, or
+you may reuse nonce material.
+
+## Part 8: Build a local test model
+
+Create a deterministic model for tests:
+
+```bash
+mkdir -p src/model
+touch src/model/shielded-token-model.ts
+```
+
+The model should mirror the standard library types closely:
+
+```ts
+export type ShieldedCoinInfo = {
+  readonly nonce: string;
+  readonly color: string;
+  readonly value: bigint;
+  readonly recipient: Recipient;
+};
+
+export type QualifiedShieldedCoinInfo = ShieldedCoinInfo & {
+  readonly mtIndex: bigint;
+};
+
+export type ShieldedSendResult = {
+  readonly sent: ShieldedCoinInfo;
+  readonly change: ShieldedCoinInfo | null;
+};
+```
+
+Then model the two send paths:
+
+```ts
+export function sendShielded(
+  input: QualifiedShieldedCoinInfo,
+  recipient: Recipient,
+  value: bigint | number,
+): ShieldedSendResult {
+  assertQualified(input);
+  return splitCoin(input, recipient, value, "sendShielded");
+}
+
+export function sendImmediateShielded(
+  input: ShieldedCoinInfo,
+  target: Recipient,
+  value: bigint | number,
+): ShieldedSendResult {
+  return splitCoin(input, target, value, "sendImmediateShielded");
+}
+```
+
+The important test helper is `assertQualified`. It rejects fresh coins that do
+not have an `mtIndex`:
+
+```ts
+function assertQualified(
+  input: ShieldedCoinInfo | QualifiedShieldedCoinInfo,
+): asserts input is QualifiedShieldedCoinInfo {
+  if (!("mtIndex" in input)) {
+    throw new Error("sendShielded requires a committed coin with an mtIndex");
+  }
+}
+```
+
+This is how the test suite makes the Merkle timing rule visible without running
+a full network.
+
+## Part 9: Write the Vitest suite
+
+Create the test file:
+
+```bash
+mkdir -p test
+touch test/shielded-token-lifecycle.test.ts
+```
+
+Start with a mint test:
+
+```ts
+it("mints a shielded coin to the contract with the expected color", () => {
+  const harness = new ShieldedTokenHarness(DOMAIN);
+
+  const coin = harness.mintToContract(1000n, NONCE);
+
+  expect(coin.value).toBe(1000n);
+  expect(coin.color).toEqual(tokenType(DOMAIN));
+  expect(coin.recipient).toEqual(CONTRACT_SELF);
+});
+```
+
+Add a nonce test:
+
+```ts
+it("derives deterministic unique nonces with evolveNonce", () => {
+  const first = evolveNonce(0n, SEED);
+  const second = evolveNonce(1n, SEED);
+
+  expect(first).not.toEqual(second);
+  expect(evolveNonce(0n, SEED)).toEqual(first);
+});
+```
+
+Add the Merkle timing test:
 
 ```ts
 it("requires a committed Merkle position before sendShielded can spend a coin", () => {
@@ -435,138 +585,199 @@ it("requires a committed Merkle position before sendShielded can spend a coin", 
 });
 ```
 
-The positive committed flow is equally important:
+Add committed transfer tests for partial and exact sends:
 
 ```ts
-const fresh = harness.mintToContract(100n, NONCE);
-const qualified = harness.commit(fresh);
+const qualified = harness.commit(harness.mintToContract(100n, NONCE));
 const result = harness.sendCommitted(qualified, ALICE, 35n);
 
 expect(result.sent.value).toBe(35n);
 expect(result.change?.value).toBe(65n);
 ```
 
-That mirrors the real operational sequence: create the output, wait for it to be
-available in the tree, then spend the qualified coin.
+Add burn tests for both paths:
 
-## Operational guidance
+```ts
+const committed = harness.commit(harness.mintToContract(90n, NONCE));
+const committedBurn = harness.burnCommitted(committed, 40n);
+expect(committedBurn.sent.recipient).toEqual(BURN_ADDRESS);
+expect(committedBurn.change?.value).toBe(50n);
 
-Production code should treat nonce state and change state as wallet-critical
-data. Losing track of a nonce can cause reuse risk. Losing track of change can
-make funds operationally inaccessible even if the chain accounting is correct.
-The tutorial contract returns the `ShieldedSendResult` from every send and burn
-path so callers cannot ignore change accidentally.
+const freshBurn = harness.burnFresh(75n, NONCE, 75n);
+expect(freshBurn.sent.recipient).toEqual(BURN_ADDRESS);
+expect(freshBurn.change).toBeNull();
+```
 
-The UI or service layer should store:
+Finally, test atomic mint-and-send:
 
-- The domain separator used for this token.
-- The local nonce seed and next index.
-- Newly minted `ShieldedCoinInfo` values until they are committed.
-- The `mtIndex` when a coin becomes spendable as `QualifiedShieldedCoinInfo`.
-- Returned change outputs and their later Merkle positions.
+```ts
+const result = harness.mintAndSend(120n, NONCE, ALICE, 45n);
 
-Do not hardcode a fake Merkle index for production spends. The only reason the
-test harness can create an index instantly is because it is a deterministic
-local model. A real application must get the actual committed index from the
-chain or wallet state.
+expect(result.sent.value).toBe(45n);
+expect(result.sent.recipient).toEqual(ALICE);
+expect(result.change?.value).toBe(75n);
+```
 
-## Common implementation mistakes
+The completed suite should cover normal flows and edge cases: over-spend,
+over-burn, zero-value operations, change reuse, fresh immediate sends, and color
+preservation.
 
-There are several mistakes that look harmless in a small demo but become serious
-when a contract is integrated into a wallet or service.
+Add one more test for change reuse. This test proves that change from a partial
+send is not just bookkeeping text; it is the next coin your application must
+commit and track:
 
-The first mistake is naming an exported circuit exactly like a standard library
-function. For example, an application circuit named `sendShielded` is easy for a
-reader to confuse with the library function `sendShielded`. This tutorial uses
-names such as `send_committed`, `burn_committed`, and `mint_and_send` so that the
-boundary between application code and standard library code stays clear.
+```ts
+it("allows change from one transaction to be committed and spent later", () => {
+  const harness = new ShieldedTokenHarness(DOMAIN);
+  const qualified = harness.commit(harness.mintToContract(100n, NONCE));
+  const first = harness.sendCommitted(qualified, ALICE, 30n);
 
-The second mistake is wrapping modern Compact code in an extra contract object
-when the surrounding examples use top-level ledger declarations, witnesses,
-constructors, and exported circuits. The current examples in the Midnight docs
-show top-level Compact modules. Matching that structure makes the generated
-TypeScript contract easier to use with the runtime patterns shown in example
-projects.
+  const change = harness.commit(first.change!);
+  const second = harness.sendCommitted(change, BOB, 20n);
 
-The third mistake is treating `ShieldedSendResult.change` as optional bookkeeping
-that can be handled later. It is optional in the type because exact sends do not
-create change. When it is present, however, it is a real output. The app should
-persist it, wait for it to be committed, and later qualify it with the real
-Merkle position. In the test suite, change from a first transfer is committed
-and spent in a second transfer to prove that the output remains usable.
+  expect(second.sent.value).toBe(20n);
+  expect(second.change?.value).toBe(50n);
+});
+```
 
-The fourth mistake is assuming a recipient public key behaves exactly like a
-contract recipient from a wallet-notification perspective. The standard library
-documentation notes that shielded sends do not currently create all user-facing
-coin ciphertext flows for arbitrary public key recipients. For a tutorial, it is
-still useful to demonstrate the correct recipient type:
-`left<ZswapCoinPublicKey, ContractAddress>(recipient)`. For production UX, the
-app must verify how the intended wallet discovers and tracks the resulting
-shielded output.
+This is the test that catches a common wallet integration bug. If the application
+forgets to store `first.change`, the user may believe the remaining value is
+still available, but the app will not know which output to qualify and spend
+later.
 
-The fifth mistake is confusing an immediate spend with a committed spend.
-`sendImmediateShielded` is not a shortcut to skip Merkle checks forever. It is
-for coins created in the current transaction. Once a transaction boundary is
-crossed, the app needs a qualified coin with `mtIndex` and should call
-`sendShielded`.
+## Part 10: Run the checks
 
-## Review and verification runbook
-
-A reviewer can check the package in three passes.
-
-First, inspect the Compact contract. Confirm that `mint_to_contract` calls
-`mintShieldedToken` with a contract recipient, that `send_committed` accepts a
-`QualifiedShieldedCoinInfo`, that committed burns send to `shieldedBurnAddress`,
-and that the fresh paths use `sendImmediateShielded`. Also confirm that the
-contract validates non-zero amounts and rejects sends or burns larger than the
-input value.
-
-Second, run the TypeScript checks:
+Run TypeScript:
 
 ```bash
-npm install
 npm run typecheck
+```
+
+Expected output:
+
+```text
+tsc -p tsconfig.json --noEmit
+```
+
+Run the tests:
+
+```bash
 npm test
 ```
 
-The unit tests are deterministic. They do not require a node, wallet, faucet, or
-proof server. That makes them suitable for CI and for quickly validating the
-control-flow assumptions in the tutorial. The tests are not a replacement for a
-real Compact compile or an integration test against a deployed contract, but
-they are a useful guardrail for the logic around change, burn destinations, and
-fresh versus committed coins.
+Expected output:
 
-Third, run the Compact compiler:
+```text
+Test Files  1 passed (1)
+Tests  18 passed (18)
+```
+
+Compile the Compact smart contract:
 
 ```bash
 npm run compact
 ```
 
-The expected output is a generated directory under `src/managed`. A complete
-application would then import the generated `Contract` class, pass the
-`witnesses` object from `src/witnesses.ts`, and drive the circuits through the
-Compact runtime in the same style as the official example applications. That
-integration layer is intentionally small because the bounty is about the
-shielded token operations themselves, not about building a full wallet UI.
+Expected result:
 
-If the compiler reports a field-name error around `QualifiedShieldedCoinInfo`,
-check the installed Compact toolchain version against the documentation. The
-reference page documents the Merkle field as `mtIndex`. Some older examples have
-used different casing. This package avoids manually constructing a qualified
-coin in Compact for the atomic flow and instead uses `sendImmediateShielded`,
-which is the safer API for a freshly minted coin.
+```text
+Compilation successful
+```
 
-## Summary
+The compile step creates generated contract files under `src/managed`. Those
+generated files are build output and do not need to be committed.
 
-The lifecycle is straightforward once the two coin states are kept separate.
-`mintShieldedToken` creates a fresh `ShieldedCoinInfo`. `sendImmediateShielded`
-spends fresh coins within the same transaction. `sendShielded` spends committed
-coins that already have a Merkle position. `shieldedBurnAddress()` turns a send
-into a burn. `ShieldedSendResult.change` is where unspent value continues after
-a partial send or partial burn. Finally, `evolveNonce` should be part of a
-deliberate nonce policy, not an afterthought.
+For final review, record the three verification results together:
 
-Together, the Compact contract and Vitest suite provide a small but complete
-reference implementation for mint, transfer, burn, change handling, nonce
-management, and the Merkle timing constraint that makes shielded token code easy
-to get wrong.
+```text
+Compact compiler: passed
+TypeScript: passed
+Vitest: 18 tests passed
+```
+
+Do not treat the Vitest result as a substitute for Compact compilation. The
+tests prove the lifecycle model and edge cases. The compiler proves the Compact
+syntax, types, witness disclosure, and standard library calls.
+
+## Troubleshooting
+
+### `compact` runs the wrong command on Windows
+
+Problem:
+
+```text
+Listing ... New files added to this directory will not be compressed.
+```
+
+That is the Windows filesystem compression utility, not the Midnight compiler.
+
+Fix:
+
+- Run the command from WSL, or
+- Put the Midnight Compact toolchain earlier in `PATH` than
+  `C:\Windows\System32`.
+
+### The compiler complains about witness disclosure
+
+Problem:
+
+```text
+potential witness-value disclosure must be declared but is not
+```
+
+Fix:
+
+Wrap the evolved nonce in `disclose(...)`:
+
+```compact
+const nonce = disclose(evolveNonce(disclose(nonceIndex), localNonceSeed()));
+```
+
+This declares the intentional disclosure of the derived nonce value, not the raw
+witness seed.
+
+### A later transfer fails because the coin has no `mtIndex`
+
+Problem:
+
+You are trying to call `sendShielded` with a fresh `ShieldedCoinInfo`.
+
+Fix:
+
+Use `sendImmediateShielded` if the coin was created in the same transaction. If
+the coin was created in a previous transaction, wait until it is committed and
+spend it as a `QualifiedShieldedCoinInfo` with the real Merkle index.
+
+### Change disappears from your app state
+
+Problem:
+
+A partial send or burn returns change, but the app does not store it.
+
+Fix:
+
+Always inspect `ShieldedSendResult.change`. If it is present, persist it and
+track its later Merkle position. That change is the remaining balance.
+
+## Conclusion
+
+You have built a complete shielded token lifecycle example:
+
+- `mintShieldedToken` creates fresh shielded coins.
+- `evolveNonce` gives you deterministic nonce derivation.
+- `sendShielded` spends committed coins with `mtIndex`.
+- `sendImmediateShielded` spends coins created in the same transaction.
+- `shieldedBurnAddress` turns a shielded send into a burn.
+- `ShieldedSendResult.change` carries the unspent remainder.
+- Vitest tests prove the normal paths and the common failure cases.
+
+The most important lesson is the fresh-versus-committed distinction. If you keep
+that boundary clear, shielded mint, transfer, and burn operations become much
+easier to reason about.
+
+Related resources:
+
+- Midnight documentation: https://docs.midnight.network/
+- Compact language reference: https://docs.midnight.network/compact/
+- Compact standard library exports:
+  https://docs.midnight.network/compact/standard-library/exports
