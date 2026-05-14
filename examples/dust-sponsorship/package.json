@@ -1,0 +1,16 @@
+{
+  "name": "midnight-dust-sponsorship-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal typecheckable DUST sponsorship boundary example for Midnight Wallet SDK integrations.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx src/sponsor-service.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
