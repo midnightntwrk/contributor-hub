@@ -1,0 +1,53 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+const TOKEN_A_DOMAIN: Bytes<32> = pad(32, "swap:tokenA");
+const TOKEN_B_DOMAIN: Bytes<32> = pad(32, "swap:tokenB");
+
+export ledger swapCount: Uint<64>;
+
+// Atomic swap: both parties exchange tokens simultaneously
+// If either side fails, the entire swap reverts
+export circuit atomicSwap(
+    partyA: UserAddress,
+    amountA: Uint<64>,
+    partyB: UserAddress,
+    amountB: Uint<64>
+): [] {
+    const colorA = tokenType(disclose(TOKEN_A_DOMAIN), kernel.self());
+    const colorB = tokenType(disclose(TOKEN_B_DOMAIN), kernel.self());
+
+    const aAmt = disclose(amountA) as Uint<128>;
+    const bAmt = disclose(amountB) as Uint<128>;
+
+    // Send Token A from contract to party B
+    sendUnshielded(colorA, bAmt, right<ContractAddress, UserAddress>(disclose(partyB)));
+
+    // Send Token B from contract to party A
+    sendUnshielded(colorB, aAmt, right<ContractAddress, UserAddress>(disclose(partyA)));
+
+    // Both sends are atomic — either both succeed or both revert
+    swapCount = swapCount + (1 as Uint<64>);
+}
+
+// Batch swap: process multiple swaps atomically
+export circuit batchSwap(
+    partyA1: UserAddress, amountA1: Uint<64>,
+    partyB1: UserAddress, amountB1: Uint<64>,
+    partyA2: UserAddress, amountA2: Uint<64>,
+    partyB2: UserAddress, amountB2: Uint<64>
+): [] {
+    const colorA = tokenType(disclose(TOKEN_A_DOMAIN), kernel.self());
+    const colorB = tokenType(disclose(TOKEN_B_DOMAIN), kernel.self());
+
+    // Swap 1
+    sendUnshielded(colorA, disclose(amountB1) as Uint<128>, right<ContractAddress, UserAddress>(disclose(partyB1)));
+    sendUnshielded(colorB, disclose(amountA1) as Uint<128>, right<ContractAddress, UserAddress>(disclose(partyA1)));
+
+    // Swap 2
+    sendUnshielded(colorA, disclose(amountB2) as Uint<128>, right<ContractAddress, UserAddress>(disclose(partyB2)));
+    sendUnshielded(colorB, disclose(amountA2) as Uint<128>, right<ContractAddress, UserAddress>(disclose(partyA2)));
+
+    swapCount = swapCount + (2 as Uint<64>);
+}

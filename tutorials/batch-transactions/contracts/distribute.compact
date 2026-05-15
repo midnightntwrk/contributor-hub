@@ -1,0 +1,66 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+// Domain separator for our token
+const DOMAIN: Bytes<32> = pad(32, "distribute:v1");
+
+// Ledger state to track total distributed amount
+export ledger totalDistributed: Uint<128>;
+export ledger distributionCount: Uint<64>;
+
+// Mint tokens to the contract for later distribution
+export circuit mintToContract(amount: Uint<64>): [] {
+    const color = mintUnshieldedToken(
+        disclose(DOMAIN),
+        disclose(amount),
+        left<ContractAddress, UserAddress>(kernel.self())
+    );
+}
+
+// Distribute tokens to up to 5 recipients in a single transaction
+// Each recipient gets the same `amountPerRecipient`
+export circuit distributeEqual(
+    amountPerRecipient: Uint<64>,
+    recipient1: UserAddress,
+    recipient2: UserAddress,
+    recipient3: UserAddress,
+    recipient4: UserAddress,
+    recipient5: UserAddress
+): [] {
+    const color = tokenType(disclose(DOMAIN), kernel.self());
+    const amount = disclose(amountPerRecipient) as Uint<128>;
+
+    // Send to each recipient — all execute atomically
+    sendUnshielded(color, amount, right<ContractAddress, UserAddress>(disclose(recipient1)));
+    sendUnshielded(color, amount, right<ContractAddress, UserAddress>(disclose(recipient2)));
+    sendUnshielded(color, amount, right<ContractAddress, UserAddress>(disclose(recipient3)));
+    sendUnshielded(color, amount, right<ContractAddress, UserAddress>(disclose(recipient4)));
+    sendUnshielded(color, amount, right<ContractAddress, UserAddress>(disclose(recipient5)));
+
+    // Update ledger state
+    totalDistributed = totalDistributed + (amount * (5 as Uint<128>));
+    distributionCount = distributionCount + (1 as Uint<64>);
+}
+
+// Distribute different amounts to 3 recipients
+export circuit distributeCustom(
+    amount1: Uint<64>,
+    recipient1: UserAddress,
+    amount2: Uint<64>,
+    recipient2: UserAddress,
+    amount3: Uint<64>,
+    recipient3: UserAddress
+): [] {
+    const color = tokenType(disclose(DOMAIN), kernel.self());
+
+    sendUnshielded(color, disclose(amount1) as Uint<128>, right<ContractAddress, UserAddress>(disclose(recipient1)));
+    sendUnshielded(color, disclose(amount2) as Uint<128>, right<ContractAddress, UserAddress>(disclose(recipient2)));
+    sendUnshielded(color, disclose(amount3) as Uint<128>, right<ContractAddress, UserAddress>(disclose(recipient3)));
+
+    totalDistributed = totalDistributed
+        + (disclose(amount1) as Uint<128>)
+        + (disclose(amount2) as Uint<128>)
+        + (disclose(amount3) as Uint<128>);
+    distributionCount = distributionCount + (3 as Uint<64>);
+}

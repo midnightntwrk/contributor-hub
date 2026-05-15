@@ -1,0 +1,67 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+const TOKEN_DOMAIN: Bytes<32> = pad(32, "escrow:token");
+const FEE_BPS: Uint<16> = 250; // 2.5% fee
+
+export ledger escrowBalance: Uint<128>;
+export ledger feeBalance: Uint<128>;
+export ledger releasedCount: Uint<64>;
+
+// Deposit tokens into escrow
+export circuit deposit(amount: Uint<64>): [] {
+    receiveUnshielded(tokenType(disclose(TOKEN_DOMAIN), kernel.self()), disclose(amount));
+    escrowBalance = escrowBalance + (disclose(amount) as Uint<128>);
+}
+
+// Release escrow: pay seller and platform fee atomically
+export circuit releaseEscrow(
+    sellerAmount: Uint<64>,
+    seller: UserAddress,
+    feeRecipient: UserAddress
+): [] {
+    const color = tokenType(disclose(TOKEN_DOMAIN), kernel.self());
+    const sellerAmt = disclose(sellerAmount) as Uint<128>;
+    const feeAmt = (sellerAmt * (FEE_BPS as Uint<128>)) / (10000 as Uint<128>);
+
+    // Both sends happen atomically — if either fails, both revert
+    sendUnshielded(color, sellerAmt, right<ContractAddress, UserAddress>(disclose(seller)));
+    sendUnshielded(color, feeAmt, right<ContractAddress, UserAddress>(disclose(feeRecipient)));
+
+    // Update state only after both sends succeed
+    escrowBalance = escrowBalance - sellerAmt - feeAmt;
+    feeBalance = feeBalance + feeAmt;
+    releasedCount = releasedCount + (1 as Uint<64>);
+}
+
+// Batch release: release multiple escrows in one transaction
+export circuit batchRelease(
+    seller1: UserAddress, amount1: Uint<64>,
+    seller2: UserAddress, amount2: Uint<64>,
+    seller3: UserAddress, amount3: Uint<64>,
+    feeRecipient: UserAddress
+): [] {
+    const color = tokenType(disclose(TOKEN_DOMAIN), kernel.self());
+
+    const a1 = disclose(amount1) as Uint<128>;
+    const a2 = disclose(amount2) as Uint<128>;
+    const a3 = disclose(amount3) as Uint<128>;
+
+    const fee1 = (a1 * (FEE_BPS as Uint<128>)) / (10000 as Uint<128>);
+    const fee2 = (a2 * (FEE_BPS as Uint<128>)) / (10000 as Uint<128>);
+    const fee3 = (a3 * (FEE_BPS as Uint<128>)) / (10000 as Uint<128>);
+
+    const feeAddr = right<ContractAddress, UserAddress>(disclose(feeRecipient));
+
+    // All 6 sends are atomic
+    sendUnshielded(color, a1, right<ContractAddress, UserAddress>(disclose(seller1)));
+    sendUnshielded(color, fee1, feeAddr);
+    sendUnshielded(color, a2, right<ContractAddress, UserAddress>(disclose(seller2)));
+    sendUnshielded(color, fee2, feeAddr);
+    sendUnshielded(color, a3, right<ContractAddress, UserAddress>(disclose(seller3)));
+    sendUnshielded(color, fee3, feeAddr);
+
+    escrowBalance = escrowBalance - a1 - a2 - a3 - fee1 - fee2 - fee3;
+    releasedCount = releasedCount + (3 as Uint<64>);
+}

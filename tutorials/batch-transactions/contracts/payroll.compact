@@ -1,0 +1,62 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+const PAY_DOMAIN: Bytes<32> = pad(32, "payroll:token");
+
+export ledger payrollPool: Uint<128>;
+export ledger paymentsProcessed: Uint<64>;
+export ledger lastPayPeriod: Uint<64>;
+
+// Fund the payroll pool
+export circuit fundPayroll(amount: Uint<64>): [] {
+    receiveUnshielded(tokenType(disclose(PAY_DOMAIN), kernel.self()), disclose(amount));
+    payrollPool = payrollPool + (disclose(amount) as Uint<128>);
+}
+
+// Pay a batch of up to 4 employees
+export circuit payBatch(
+    emp1: UserAddress, salary1: Uint<64>,
+    emp2: UserAddress, salary2: Uint<64>,
+    emp3: UserAddress, salary3: Uint<64>,
+    emp4: UserAddress, salary4: Uint<64>,
+    employeeCount: Uint<8>,
+    payPeriod: Uint<64>
+): [] {
+    const color = tokenType(disclose(PAY_DOMAIN), kernel.self());
+
+    // Verify this is a new pay period
+    assert(disclose(payPeriod) > lastPayPeriod, "Already processed this pay period");
+
+    let totalPaid: Uint<128> = (0 as Uint<128>);
+
+    // Employee 1 (always required)
+    const s1 = disclose(salary1) as Uint<128>;
+    sendUnshielded(color, s1, right<ContractAddress, UserAddress>(disclose(emp1)));
+    totalPaid = totalPaid + s1;
+
+    // Employee 2
+    if (disclose(employeeCount) >= (2 as Uint<8>)) {
+        const s2 = disclose(salary2) as Uint<128>;
+        sendUnshielded(color, s2, right<ContractAddress, UserAddress>(disclose(emp2)));
+        totalPaid = totalPaid + s2;
+    }
+
+    // Employee 3
+    if (disclose(employeeCount) >= (3 as Uint<8>)) {
+        const s3 = disclose(salary3) as Uint<128>;
+        sendUnshielded(color, s3, right<ContractAddress, UserAddress>(disclose(emp3)));
+        totalPaid = totalPaid + s3;
+    }
+
+    // Employee 4
+    if (disclose(employeeCount) >= (4 as Uint<8>)) {
+        const s4 = disclose(salary4) as Uint<128>;
+        sendUnshielded(color, s4, right<ContractAddress, UserAddress>(disclose(emp4)));
+        totalPaid = totalPaid + s4;
+    }
+
+    payrollPool = payrollPool - totalPaid;
+    paymentsProcessed = paymentsProcessed + (disclose(employeeCount) as Uint<64>);
+    lastPayPeriod = disclose(payPeriod);
+}

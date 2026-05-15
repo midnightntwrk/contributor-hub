@@ -1,0 +1,45 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+const TOKEN_DOMAIN: Bytes<32> = pad(32, "batch:token");
+
+// Track batch progress
+export ledger batchId: Counter;
+export ledger processedInBatch: Uint<64>;
+export ledger totalBatches: Uint<64>;
+
+// Initialize a new batch and return the batch ID
+export circuit startBatch(): Uint<64> {
+    batchId.increment();
+    processedInBatch = (0 as Uint<64>);
+    return batchId.value() as Uint<64>;
+}
+
+// Process a chunk of up to 3 recipients
+export circuit processChunk(
+    recipient1: UserAddress, amount1: Uint<64>,
+    recipient2: UserAddress, amount2: Uint<64>,
+    recipient3: UserAddress, amount3: Uint<64>,
+    chunkSize: Uint<8>  // How many of the 3 are actually valid
+): [] {
+    const color = tokenType(disclose(TOKEN_DOMAIN), kernel.self());
+
+    // Always send to recipient 1 (at least one required)
+    sendUnshielded(color, disclose(amount1) as Uint<128>, right<ContractAddress, UserAddress>(disclose(recipient1)));
+    processedInBatch = processedInBatch + (1 as Uint<64>);
+
+    // Conditionally send to recipient 2
+    if (disclose(chunkSize) >= (2 as Uint<8>)) {
+        sendUnshielded(color, disclose(amount2) as Uint<128>, right<ContractAddress, UserAddress>(disclose(recipient2)));
+        processedInBatch = processedInBatch + (1 as Uint<64>);
+    }
+
+    // Conditionally send to recipient 3
+    if (disclose(chunkSize) >= (3 as Uint<8>)) {
+        sendUnshielded(color, disclose(amount3) as Uint<128>, right<ContractAddress, UserAddress>(disclose(recipient3)));
+        processedInBatch = processedInBatch + (1 as Uint<64>);
+    }
+
+    totalBatches = totalBatches + (1 as Uint<64>);
+}
