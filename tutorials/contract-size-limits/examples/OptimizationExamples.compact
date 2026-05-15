@@ -1,0 +1,124 @@
+// ============================================================================
+// OptimizationExamples.compact -- Demonstrates constraint-reduction techniques
+// ============================================================================
+// These examples show before/after patterns for reducing circuit complexity.
+// Each section focuses on a specific optimization strategy.
+// ============================================================================
+
+// STRATEGY 1: Batch State Reads (pack related data into structs)
+
+// BEFORE: 4 separate state reads = ~4 x (30 x tree_depth) constraints
+// Each ledger read requires a Merkle proof verification.
+
+// AFTER: 1 state read = 1 Merkle proof
+// Pack all user data into a single struct stored at one key.
+contract OptimizedStateReads {
+  ledger {
+    user_profiles: Map<Bytes<32>, UserProfile>;
+  }
+
+  circuit efficient_user_check(user: Bytes<32>): Bool {
+    let profile = ledger.user_profiles[user];  // Single Merkle proof
+    return profile.balance > 0
+      \&\& profile.nonce > 0
+      \&\& profile.role > 0
+      \&\& profile.active;
+  }
+}
+
+// STRATEGY 2: Reduce Loop Bounds
+
+// BEFORE: Loop bound set to theoretical maximum
+// Generates 100 iterations of constraints even if count is small
+
+// AFTER: Loop bound matches actual maximum usage
+contract OptimizedLoops {
+  const MAX_ITEMS: Uint<8> = 16;  // Tight bound based on real usage
+
+  ledger {
+    item_counts: Map<Bytes<32>, Uint<8>>;
+  }
+
+  circuit efficient_sum_items(
+    owner: Bytes<32>,
+    items: Array<Uint<64>, 16>
+  ): Uint<64> {
+    let count = ledger.item_counts[owner];
+    let total: Uint<64> = 0;
+    // Only 16 iterations -- 6x fewer constraints than the 100-iteration version
+    for i in 0..16 {
+      if i < count {
+        total = total + items[i];
+      }
+    }
+    return total;
+  }
+}
+
+// STRATEGY 3: Witness Circuits for Complex Computation
+
+// BEFORE: Everything in one massive circuit
+// AFTER: Separate witness computation from verification
+
+contract OptimizedWitness {
+  ledger {
+    results: Map<Bytes<32>, Uint<64>>;
+  }
+
+  // Witness circuit: computes intermediate value
+  // Witness circuits do NOT generate on-chain constraints
+  witness compute_intermediate(x: Uint<64>, y: Uint<64>): Uint<64> {
+    let a = x * x + y * y;
+    let b = a * a + x * y;
+    let c = b * b + a;
+    return c;
+  }
+
+  // Main circuit: only verifies the witness claim
+  circuit verify_and_store(
+    user: Bytes<32>,
+    x: Uint<64>,
+    y: Uint<64>,
+    claimed_result: Uint<64>
+  ): void {
+    // Verify witness (fewer constraints than recomputing)
+    let verified = compute_intermediate(x, y);
+    assert verified == claimed_result, "Invalid computation proof";
+
+    // Store result
+    ledger.results[user] = claimed_result % 1000;
+  }
+}
+
+// STRATEGY 4: Shared Validation via Import
+
+// Define reusable validation once in ValidatorContract
+// Then import and reuse in multiple contracts
+
+// STRATEGY 5: Bitwise Flag Checks
+
+contract OptimizedFlags {
+  ledger {
+    permissions: Map<Bytes<32>, Uint<8>>;  // Bitfield: 8 flags in 1 value
+  }
+
+  // Permission bit positions
+  const FLAG_CAN_TRANSFER: Uint<8> = 1;    // bit 0
+  const FLAG_CAN_MINT: Uint<8> = 2;        // bit 1
+  const FLAG_CAN_BURN: Uint<8> = 4;        // bit 2
+  const FLAG_CAN_GOVERN: Uint<8> = 8;      // bit 3
+
+  circuit check_permission(user: Bytes<32>, flag: Uint<8>): Bool {
+    let perms = ledger.permissions[user];
+    // Single bitwise AND -- much cheaper than multiple if/else comparisons
+    return (perms \& flag) == flag;
+  }
+
+  circuit grant_permission(user: Bytes<32>, flag: Uint<8>): void {
+    ledger.permissions[user] = ledger.permissions[user] | flag;
+  }
+
+  circuit revoke_permission(user: Bytes<32>, flag: Uint<8>): void {
+    ledger.permissions[user] = ledger.permissions[user] \& ~flag;
+  }
+}
