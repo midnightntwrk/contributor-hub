@@ -1,0 +1,104 @@
+// ============================================================================
+// LiquidityContract.compact — Split from MonolithicDEX (6 circuits)
+// ============================================================================
+// Part 2 of 3: Handles liquidity provision and LP token management.
+// Deploy alongside SwapContract and GovContract.
+// ============================================================================
+
+contract LiquidityContract {
+  ledger {
+    lp_tokens: Map<Bytes<32>, Uint<64>>;         // pool_key -> total LP supply
+    user_lp: Map<Bytes<32>, Map<Bytes<32>, Uint<64>>>; // user -> pool -> balance
+    min_liquidity: Uint<64>;
+    reserves: Map<Bytes<32>, Uint<64>>;           // token -> total reserve
+  }
+
+  circuit add_liquidity(
+    user: Bytes<32>,
+    token_a: Bytes<32>,
+    token_b: Bytes<32>,
+    amount_a: Uint<64>,
+    amount_b: Uint<64>
+  ): Uint<64> {
+    let pool_key = token_a ++ token_b;
+    let lp_minted = calculate_lp_tokens(pool_key, amount_a, amount_b);
+    verify_minimum_liquidity(lp_minted);
+
+    // Update LP token tracking
+    let current_total = ledger.lp_tokens[pool_key];
+    ledger.lp_tokens[pool_key] = current_total + lp_minted;
+    ledger.user_lp[user][pool_key] = ledger.user_lp[user][pool_key] + lp_minted;
+
+    // Update reserve tracking
+    ledger.reserves[token_a] = ledger.reserves[token_a] + amount_a;
+    ledger.reserves[token_b] = ledger.reserves[token_b] + amount_b;
+
+    return lp_minted;
+  }
+
+  circuit remove_liquidity(
+    user: Bytes<32>,
+    token_a: Bytes<32>,
+    token_b: Bytes<32>,
+    lp_amount: Uint<64>
+  ): Uint<64> {
+    let pool_key = token_a ++ token_b;
+    let user_balance = ledger.user_lp[user][pool_key];
+    assert user_balance >= lp_amount, "Insufficient LP balance";
+
+    let total_lp = ledger.lp_tokens[pool_key];
+    let reserve_a = ledger.reserves[token_a];
+    let reserve_b = ledger.reserves[token_b];
+
+    let share_a = (reserve_a * lp_amount) / total_lp;
+    let share_b = (reserve_b * lp_amount) / total_lp;
+
+    // Update balances
+    ledger.user_lp[user][pool_key] = user_balance - lp_amount;
+    ledger.lp_tokens[pool_key] = total_lp - lp_amount;
+    ledger.reserves[token_a] = reserve_a - share_a;
+    ledger.reserves[token_b] = reserve_b - share_b;
+
+    return share_a + share_b;
+  }
+
+  circuit calculate_lp_tokens(
+    pool_key: Bytes<32>,
+    amount_a: Uint<64>,
+    amount_b: Uint<64>
+  ): Uint<64> {
+    let total_lp = ledger.lp_tokens[pool_key];
+    if total_lp == 0 {
+      // First deposit: LP tokens = sqrt(amount_a * amount_b)
+      // Simplified: use product as initial LP
+      return amount_a;
+    }
+    let reserve_a = ledger.reserves[pool_key];
+    return (total_lp * amount_a) / reserve_a;
+  }
+
+  circuit verify_minimum_liquidity(lp_amount: Uint<64>): void {
+    assert lp_amount >= ledger.min_liquidity, "Below minimum liquidity threshold";
+  }
+
+  circuit get_available_liquidity(
+    token_a: Bytes<32>,
+    token_b: Bytes<32>
+  ): Uint<64> {
+    // Called by SwapContract via cross-contract reference
+    return ledger.reserves[token_a];
+  }
+
+  circuit update_lp_balances(
+    user: Bytes<32>,
+    pool_key: Bytes<32>,
+    amount: Uint<64>,
+    is_add: Bool
+  ): void {
+    if is_add {
+      ledger.user_lp[user][pool_key] = ledger.user_lp[user][pool_key] + amount;
+    } else {
+      ledger.user_lp[user][pool_key] = ledger.user_lp[user][pool_key] - amount;
+    }
+  }
+}
