@@ -1,0 +1,124 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+/**
+ * Bilateral Private Escrow Example
+ * 
+ * Demonstrates Pattern 1: Two parties engage in a private transaction
+ * where neither party's constraints (max/min price) are revealed.
+ * 
+ * The contract verifies ZK proofs that the agreed price falls within
+ * both parties' private bounds.
+ */
+
+enum EscrowStatus { Open, Initiated, Completed, Cancelled }
+
+contract PrivateEscrow {
+
+    // ── Public State ──────────────────────────────────────
+    public status: EscrowStatus;
+    public escrowAmount: Coin<0>;
+    public agreedPriceCommitment: Field;   // hash of agreed price
+    public timeoutBlock: uint<64>;
+
+    // ── Private State ─────────────────────────────────────
+
+    // Buyer's private constraints
+    private buyerState: {
+        maxPrice: Field,
+        depositNonce: Field,
+        secret: Field
+    };
+
+    // Seller's private constraints
+    private sellerState: {
+        minPrice: Field,
+        acceptNonce: Field,
+        secret: Field
+    };
+
+    // ── Transitions ───────────────────────────────────────
+
+    /**
+     * Buyer initiates escrow by depositing funds.
+     * The maxPrice is committed via a hash — never revealed on-chain.
+     */
+    transition initiate(
+        maxPriceCommitment: Hash,
+        deposit: Coin<0>,
+        timeoutBlocks: uint<64>,
+        buyerProof: Proof    // proves buyer knows preimage of commitment
+    ) {
+        assert(status == EscrowStatus.Open);
+        assert(verify(buyerProof, maxPriceCommitment, "commitment_valid"));
+        
+        escrowAmount += deposit;
+        agreedPriceCommitment = maxPriceCommitment;
+        timeoutBlock = currentBlock() + timeoutBlocks;
+        status = EscrowStatus.Initiated;
+    }
+
+    /**
+     * Seller accepts the escrow with an agreed price.
+     * Two ZK proofs are required:
+     *   1. Buyer's proof: agreedPrice <= buyerState.maxPrice
+     *   2. Seller's proof: agreedPrice >= sellerState.minPrice
+     *
+     * Neither maxPrice nor minPrice is ever exposed.
+     */
+    transition accept(
+        agreedPrice: Field,
+        buyerBoundProof: Proof,
+        sellerBoundProof: Proof,
+        sellerSignature: Signature
+    ) {
+        assert(status == EscrowStatus.Initiated);
+        assert(currentBlock() < timeoutBlock);
+        
+        // Verify the agreed price is within buyer's private bounds
+        assert(verify(
+            buyerBoundProof,
+            agreedPrice,
+            "lte",           // agreedPrice <= maxPrice
+            "buyer_bound"
+        ));
+
+        // Verify the agreed price is within seller's private bounds
+        assert(verify(
+            sellerBoundProof,
+            agreedPrice,
+            "gte",           // agreedPrice >= minPrice
+            "seller_bound"
+        ));
+
+        // Store commitment to agreed price (not the price itself)
+        agreedPriceCommitment = hash(agreedPrice);
+        
+        // Release escrow to seller
+        transfer(escrowAmount, seller());
+        status = EscrowStatus.Completed;
+    }
+
+    /**
+     * Cancel escrow after timeout. Funds return to buyer.
+     */
+    transition cancel() {
+        assert(status == EscrowStatus.Initiated);
+        assert(currentBlock() >= timeoutBlock);
+        
+        transfer(escrowAmount, buyer());
+        status = EscrowStatus.Cancelled;
+    }
+}
