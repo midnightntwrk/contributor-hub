@@ -7,6 +7,8 @@ This tutorial walks through building a **Confidential Tokenized Real Estate dApp
 It applies the same privacy primitives used in the [Confidential Dividend](../confidential-dividend/README.md) and [Confidential Asset Management](../confidential-asset-management/README.md) tutorials, adapted for the specifics of fractional real estate: rental cycles, multi-property tracking, and investor-side yield claims.
 
 - **Source repo:** https://github.com/ayushsingh82/Midnight-dApps/tree/main/confidential-real-estate
+- **Article:** https://dev.to/ayush_singh_4525768ba4731/-tutorial-building-confidential-tokenized-real-estate-on-midnight-26o9
+- **Launch thread:** https://x.com/eth_ay32/status/2054506182988169267
 
 ---
 
