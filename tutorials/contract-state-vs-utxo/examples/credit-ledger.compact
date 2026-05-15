@@ -1,0 +1,140 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+/**
+ * Credit Ledger — Contract-State Accounting
+ *
+ * Demonstrates the ledger-state approach to tracking value.
+ * No real tokens move — all balances are stored in a Map
+ * inside the contract's on-chain state.
+ *
+ * Credits are internal accounting units. They cannot be
+ * transferred to wallets, traded on DEXes, or used by
+ * other contracts without explicit integration.
+ *
+ * IMPORTANT: Ledger state is PUBLIC. Anyone can query
+ * any account's balance. If you need private balances,
+ * use shielded UTXO tokens instead.
+ */
+
+// Admin address, set at deploy time
+export ledger admin: Bytes<32>;
+
+// Balance map: address -> credit balance
+export ledger balances: Map<Bytes<32>, Uint<64>>;
+
+// Total supply counter (number of credit operations)
+export ledger totalCreditOps: Counter;
+
+// Account count counter (tracks unique accounts)
+export ledger accountCount: Counter;
+
+/**
+ * Constructor: sets the deployer as admin.
+ */
+constructor() {
+    admin = disclose(ownPublicKey);
+}
+
+/**
+ * Credit an account with units.
+ *
+ * Only the admin can call this. This is a pure bookkeeping
+ * operation — no tokens are minted or transferred. The
+ * contract simply records a number in its Map.
+ *
+ * @param account - The address to credit
+ * @param amount  - The amount to credit
+ */
+export circuit credit(account: Bytes<32>, amount: Uint<64>): [] {
+    assert(disclose(ownPublicKey) == admin, "only admin can credit");
+    let current: Uint<64> = balances.lookup(account);
+    let isNew: Boolean = (current == 0) && (amount > 0);
+    balances.insert(account, current + amount);
+    totalCreditOps.increment();
+    if (isNew) {
+        accountCount.increment();
+    }
+}
+
+/**
+ * Debit an account (subtract credits).
+ *
+ * Only the admin can call this. Fails if insufficient balance.
+ *
+ * @param account - The address to debit
+ * @param amount  - The amount to subtract
+ */
+export circuit debit(account: Bytes<32>, amount: Uint<64>): [] {
+    assert(disclose(ownPublicKey) == admin, "only admin can debit");
+    let current: Uint<64> = balances.lookup(account);
+    assert(current >= amount, "insufficient balance");
+    balances.insert(account, current - amount);
+    totalCreditOps.increment();
+}
+
+/**
+ * Transfer credits between accounts.
+ *
+ * Any user can transfer their own credits to another account.
+ * This is pure arithmetic on the Map — no UTXO operations.
+ *
+ * @param recipient - The address to transfer to
+ * @param amount    - The amount to transfer
+ */
+export circuit transferCredits(recipient: Bytes<32>, amount: Uint<64>): [] {
+    let sender: Bytes<32> = disclose(ownPublicKey);
+    let senderBal: Uint<64> = balances.lookup(sender);
+    assert(senderBal >= amount, "insufficient balance");
+
+    let recipientBal: Uint<64> = balances.lookup(recipient);
+    let isNewRecipient: Boolean = (recipientBal == 0) && (amount > 0);
+
+    balances.insert(sender, senderBal - amount);
+    balances.insert(recipient, recipientBal + amount);
+    totalCreditOps.increment();
+
+    if (isNewRecipient) {
+        accountCount.increment();
+    }
+}
+
+/**
+ * Read-only: get the balance of an account.
+ *
+ * @param account - The address to query
+ * @return The current balance
+ */
+export circuit getBalance(account: Bytes<32>): Uint<64> {
+    return balances.lookup(account);
+}
+
+/**
+ * Read-only: get the total number of credit operations.
+ */
+export circuit getTotalOps(): Uint<64> {
+    return totalCreditOps.read();
+}
+
+/**
+ * Read-only: get the number of unique accounts.
+ */
+export circuit getAccountCount(): Uint<64> {
+    return accountCount.read();
+}
