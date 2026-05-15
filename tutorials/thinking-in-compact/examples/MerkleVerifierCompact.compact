@@ -1,0 +1,100 @@
+// Merkle Proof Verifier in Compact
+// Demonstrates the Midnight/Compact approach to ZK Merkle verification
+// with persistent ledger state and explicit witness/circuit separation
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+
+pragma language_version 0.16.0;
+import CompactStandardLibrary;
+
+contract MerkleVerifier {
+    ledger {
+        verifiedRoots: Counter<Bytes<32>>;
+        verificationCount: Counter<UInt<64>>;
+        latestRoot: Counter<Bytes<32>>;
+    }
+
+    // Register a new Merkle root as trusted
+    circuit registerRoot(root: Bytes<32>): [] {
+        this.latestRoot.set(root);
+    }
+
+    // Verify a Merkle proof against the stored root
+    // Returns true if proof is valid
+    circuit verifyProof(
+        leaf: Field,
+        pathElements: Vector<20, Field>,
+        pathIndices: Vector<20, Field>
+    ): Bool {
+        // Enforce binary constraint on each path index
+        for (var i = 0; i < 20; i++) {
+            assert pathIndices[i] == field(0) || pathIndices[i] == field(1);
+        }
+
+        // Compute the Merkle root from leaf + proof path
+        var currentHash = leaf;
+        for (var i = 0; i < 20; i++) {
+            var left = pathIndices[i] == field(0) ? currentHash : pathElements[i];
+            var right = pathIndices[i] == field(0) ? pathElements[i] : currentHash;
+            currentHash = poseidon([left, right]);
+        }
+
+        // Assert computed root matches the stored root
+        var storedRoot = this.latestRoot.value();
+        assert currentHash == fieldFromBytes(storedRoot);
+
+        // Record successful verification
+        this.verificationCount.increment();
+
+        return true;
+    }
+
+    // Verify against a specific root (not necessarily the stored one)
+    circuit verifyAgainstRoot(
+        leaf: Field,
+        pathElements: Vector<20, Field>,
+        pathIndices: Vector<20, Field>,
+        expectedRoot: Field
+    ): Bool {
+        for (var i = 0; i < 20; i++) {
+            assert pathIndices[i] == field(0) || pathIndices[i] == field(1);
+        }
+
+        var currentHash = leaf;
+        for (var i = 0; i < 20; i++) {
+            var left = pathIndices[i] == field(0) ? currentHash : pathElements[i];
+            var right = pathIndices[i] == field(0) ? pathElements[i] : currentHash;
+            currentHash = poseidon([left, right]);
+        }
+
+        assert currentHash == expectedRoot;
+
+        this.verifiedRoots.increment();
+
+        return true;
+    }
+}
+
+// Witness function: runs off-chain to build Merkle proof data
+// from raw tree data. This is the off-chain counterpart to the
+// on-chain circuit — a key concept that has no Circom equivalent.
+witness function buildMerkleProof(
+    leafBytes: Bytes<32>,
+    siblings: Vector<20, Bytes<32>>,
+    pathBits: Vector<20, Bool>
+): { leaf: Field, pathElements: Vector<20, Field>, pathIndices: Vector<20, Field> } {
+    var leafField = fieldFromBytes(leafBytes);
+    var elements: Vector<20, Field> = [];
+    var indices: Vector<20, Field> = [];
+
+    for (var i = 0; i < 20; i++) {
+        elements[i] = fieldFromBytes(siblings[i]);
+        indices[i] = pathBits[i] ? field(1) : field(0);
+    }
+
+    return {
+        leaf: leafField,
+        pathElements: elements,
+        pathIndices: indices
+    };
+}
