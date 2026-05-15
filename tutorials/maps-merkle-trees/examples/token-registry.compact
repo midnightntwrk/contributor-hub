@@ -1,0 +1,135 @@
+import CompactStandardLibrary;
+
+// ============================================================
+// Token Registry using Maps and Merkle Trees
+// Demonstrates: Map declaration, struct values, Merkle insertion
+// ============================================================
+
+struct TokenInfo {
+    name: Bytes<64>;
+    symbol: Bytes<8>;
+    total_supply: Uint<128>;
+    decimals: Uint<8>;
+    issuer: Bytes<32>;
+}
+
+contract TokenRegistry() {
+    // Maps for fast O(1) lookups
+    ledger tokens: Map<Bytes<32>, TokenInfo>;
+    ledger registered: Map<Bytes<32>, Boolean>;
+    ledger balances: Map<Bytes<32>, Map<Bytes<32>, Uint<128>>>;
+
+    // Merkle tree for proof of token existence
+    ledger token_tree: MerkleTree<16>;
+
+    // Admin controls
+    ledger admin: Bytes<32>;
+    ledger token_count: Uint<32>;
+
+    // ---- Admin Circuits ----
+
+    circuit set_admin(new_admin: Bytes<32>, caller: Bytes<32>): Boolean {
+        require(caller == admin);
+        admin = new_admin;
+        return true;
+    }
+
+    // ---- Token Registration ----
+
+    circuit register_token(
+        token_id: Bytes<32>,
+        info: TokenInfo,
+        caller: Bytes<32>
+    ): Boolean {
+        require(caller == admin);
+        require(!registered[token_id]);
+
+        // Store token info in map
+        tokens[token_id] = info;
+        registered[token_id] = true;
+
+        // Insert commitment into Merkle tree
+        let commitment: Bytes<32> = hash(token_id ++ info.to_bytes());
+        token_tree.insert(commitment);
+
+        token_count = token_count + 1;
+        return true;
+    }
+
+    // ---- Token Queries ----
+
+    circuit is_registered(token_id: Bytes<32>): Boolean {
+        return registered[token_id];
+    }
+
+    circuit get_token_info(token_id: Bytes<32>): TokenInfo {
+        require(registered[token_id]);
+        return tokens[token_id];
+    }
+
+    circuit get_token_count(): Uint<32> {
+        return token_count;
+    }
+
+    // ---- Merkle Proof Operations ----
+
+    circuit get_tree_root(): Bytes<32> {
+        return token_tree.root();
+    }
+
+    circuit prove_token_exists(
+        token_id: Bytes<32>,
+        proof_path: Vector<16, Bytes<32>>,
+        proof_directions: Vector<16, Boolean>
+    ): Boolean {
+        require(registered[token_id]);
+
+        // Recompute root from leaf and proof path
+        let info: TokenInfo = tokens[token_id];
+        var current: Bytes<32> = hash(token_id ++ info.to_bytes());
+
+        for (var i = 0; i < 16; i = i + 1) {
+            if (proof_directions[i]) {
+                current = hash(proof_path[i] ++ current);
+            } else {
+                current = hash(current ++ proof_path[i]);
+            }
+        }
+
+        return current == token_tree.root();
+    }
+
+    // ---- Balance Management ----
+
+    circuit mint(
+        token_id: Bytes<32>,
+        to: Bytes<32>,
+        amount: Uint<128>,
+        caller: Bytes<32>
+    ): Boolean {
+        require(caller == admin);
+        require(registered[token_id]);
+
+        let current_balance: Uint<128> = balances[token_id][to];
+        balances[token_id][to] = current_balance + amount;
+        return true;
+    }
+
+    circuit transfer(
+        token_id: Bytes<32>,
+        from: Bytes<32>,
+        to: Bytes<32>,
+        amount: Uint<128>
+    ): Boolean {
+        require(registered[token_id]);
+        require(balances[token_id][from] >= amount);
+
+        balances[token_id][from] = balances[token_id][from] - amount;
+        balances[token_id][to] = balances[token_id][to] + amount;
+        return true;
+    }
+
+    circuit get_balance(token_id: Bytes<32>, account: Bytes<32>): Uint<128> {
+        return balances[token_id][account];
+    }
+}

@@ -1,0 +1,154 @@
+import CompactStandardLibrary;
+
+// ============================================================
+// Private Voting System using Maps and Merkle Trees
+// Demonstrates: Voter registration via Merkle Tree,
+//               vote casting with proof verification
+// ============================================================
+
+contract PrivateVoting() {
+    // Voter management
+    ledger voter_tree: MerkleTree<20>;
+    ledger is_registered: Map<Bytes<32>, Boolean>;
+    ledger has_voted: Map<Bytes<32>, Boolean>;
+
+    // Vote tracking
+    ledger vote_tree: MerkleTree<20>;
+    ledger votes_for: Uint<128>;
+    ledger votes_against: Uint<128>;
+    ledger total_votes: Uint<128>;
+
+    // Election state
+    ledger voting_open: Boolean;
+    ledger election_title: Bytes<128>;
+    ledger admin: Bytes<32>;
+    ledger voter_count: Uint<32>;
+
+    // ---- Election Management ----
+
+    circuit start_election(title: Bytes<128>, caller: Bytes<32>): Boolean {
+        require(caller == admin);
+        require(!voting_open);
+
+        election_title = title;
+        voting_open = true;
+        votes_for = 0;
+        votes_against = 0;
+        total_votes = 0;
+        return true;
+    }
+
+    circuit end_election(caller: Bytes<32>): Boolean {
+        require(caller == admin);
+        require(voting_open);
+
+        voting_open = false;
+        return true;
+    }
+
+    // ---- Voter Registration ----
+
+    circuit register_voter(voter_id: Bytes<32>, caller: Bytes<32>): Boolean {
+        require(caller == admin);
+        require(voting_open);
+        require(!is_registered[voter_id]);
+
+        is_registered[voter_id] = true;
+        voter_tree.insert(voter_id);
+        voter_count = voter_count + 1;
+        return true;
+    }
+
+    circuit is_voter_registered(voter_id: Bytes<32>): Boolean {
+        return is_registered[voter_id];
+    }
+
+    circuit get_voter_count(): Uint<32> {
+        return voter_count;
+    }
+
+    // ---- Vote Casting ----
+
+    circuit cast_vote(
+        voter_id: Bytes<32>,
+        vote_choice: Boolean,
+        voter_proof_path: Vector<20, Bytes<32>>,
+        voter_proof_directions: Vector<20, Boolean>
+    ): Boolean {
+        require(voting_open);
+        require(is_registered[voter_id]);
+        require(!has_voted[voter_id]);
+
+        // Verify voter membership in the voter tree
+        var current: Bytes<32> = voter_id;
+        for (var i = 0; i < 20; i = i + 1) {
+            if (voter_proof_directions[i]) {
+                current = hash(voter_proof_path[i] ++ current);
+            } else {
+                current = hash(current ++ voter_proof_path[i]);
+            }
+        }
+        require(current == voter_tree.root());
+
+        // Mark voter as having voted
+        has_voted[voter_id] = true;
+
+        // Record vote commitment
+        let vote_commitment: Bytes<32> = hash(
+            voter_id ++ (if vote_choice then field(1) else field(0))
+        );
+        vote_tree.insert(vote_commitment);
+
+        // Tally
+        if (vote_choice) {
+            votes_for = votes_for + 1;
+        } else {
+            votes_against = votes_against + 1;
+        }
+        total_votes = total_votes + 1;
+
+        return true;
+    }
+
+    // ---- Results ----
+
+    circuit get_results(): Vector<3, Uint<128>> {
+        require(!voting_open);
+        var results: Vector<3, Uint<128>>;
+        results[0] = votes_for;
+        results[1] = votes_against;
+        results[2] = total_votes;
+        return results;
+    }
+
+    circuit get_vote_root(): Bytes<32> {
+        return vote_tree.root();
+    }
+
+    circuit get_voter_root(): Bytes<32> {
+        return voter_tree.root();
+    }
+
+    // ---- Proof of Participation ----
+
+    circuit prove_voted(
+        voter_id: Bytes<32>,
+        vote_commitment: Bytes<32>,
+        proof_path: Vector<20, Bytes<32>>,
+        proof_directions: Vector<20, Boolean>
+    ): Boolean {
+        require(has_voted[voter_id]);
+
+        // Verify the vote commitment is in the vote tree
+        var current: Bytes<32> = vote_commitment;
+        for (var i = 0; i < 20; i = i + 1) {
+            if (proof_directions[i]) {
+                current = hash(proof_path[i] ++ current);
+            } else {
+                current = hash(current ++ proof_path[i]);
+            }
+        }
+
+        return current == vote_tree.root();
+    }
+}
