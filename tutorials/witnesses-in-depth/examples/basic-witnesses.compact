@@ -1,0 +1,71 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+
+// Basic Witnesses Example — Midnight Compact
+// Demonstrates: primitive, composite, and argument-free witness declarations
+
+// --- Type Definitions ---
+
+struct UserRecord {
+  balance: Field;
+  nonce: Field;
+  tier: Uint<8>;
+}
+
+// --- Witness Declarations ---
+
+// Primitive witness: returns a single Field value for a given address
+witness get_balance(owner: Address): Field;
+
+// Composite witness: returns a struct with multiple fields
+witness get_user_record(addr: Address): UserRecord;
+
+// Argument-free witness: returns a value without any input
+witness current_timestamp(): Uint<64>;
+
+// --- Contract ---
+
+contract BasicWitnesses {
+
+  ledger_root: Field;
+  last_action: Uint<64>;
+  action_count: Field;
+
+  constructor(initial_root: Field) {
+    ledger_root = initial_root;
+    last_action = 0;
+    action_count = 0;
+  }
+
+  // Transfer tokens privately — witness proves sender has funds without revealing balance
+  transition transfer(sender: Address, recipient_hash: Field, amount: Field): Field {
+    let balance: Field = get_balance(sender);
+    assert(balance >= amount, "Insufficient balance");
+
+    let now: Uint<64> = current_timestamp();
+    assert(now > last_action, "Timestamp must be monotonically increasing");
+
+    last_action = now;
+    action_count = action_count + 1;
+
+    return balance - amount;
+  }
+
+  // Upgrade user tier using composite witness
+  transition upgrade_tier(addr: Address, target_tier: Uint<8>): Boolean {
+    let record: UserRecord = get_user_record(addr);
+    assert(record.tier < target_tier, "Already at or above target tier");
+    assert(record.nonce > 0, "Account must be active");
+
+    action_count = action_count + 1;
+
+    return true;
+  }
+
+  // View: check if balance is non-zero (still uses witness for privacy)
+  transition check_balance(owner: Address): Boolean {
+    let balance: Field = get_balance(owner);
+    return balance > 0;
+  }
+}

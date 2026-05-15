@@ -1,0 +1,94 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+
+// Merkle Witness Example — Midnight Compact
+// Demonstrates authenticated data inclusion proofs using Merkle witnesses
+
+// --- Constants ---
+
+const TREE_DEPTH: Uint<8> = 20;
+
+// --- Types ---
+
+struct MerklePath {
+  siblings: [Field; 20];
+  directions: [Boolean; 20];
+}
+
+struct TokenCommitment {
+  value: Field;
+  owner_hash: Field;
+  salt: Field;
+}
+
+// --- Witness Declarations ---
+
+witness get_leaf_value(index: Field): Field;
+witness get_merkle_proof(index: Field): MerklePath;
+witness get_commitment(index: Field): TokenCommitment;
+
+// --- Circuit Functions ---
+
+fn compute_root(leaf: Field, proof: MerklePath) -> Field {
+  let current: Field = leaf;
+  for i in 0..20 {
+    let sibling: Field = proof.siblings[i];
+    let is_right: Boolean = proof.directions[i];
+    if (is_right) {
+      current = hash_pair(sibling, current);
+    } else {
+      current = hash_pair(current, sibling);
+    }
+  }
+  return current;
+}
+
+fn hash_pair(left: Field, right: Field) -> Field {
+  return left + right * 2;
+}
+
+fn commit_token(token: TokenCommitment): Field {
+  return hash_pair(hash_pair(token.value, token.owner_hash), token.salt);
+}
+
+// --- Contract ---
+
+contract MerkleWitnessExample {
+
+  merkle_root: Field;
+  total_included: Field;
+
+  constructor(initial_root: Field) {
+    merkle_root = initial_root;
+    total_included = 0;
+  }
+
+  // Prove that a leaf exists in the Merkle tree
+  transition prove_inclusion(leaf_index: Field): Boolean {
+    let leaf: Field = get_leaf_value(leaf_index);
+    let proof: MerklePath = get_merkle_proof(leaf_index);
+    let computed_root: Field = compute_root(leaf, proof);
+    assert(computed_root == merkle_root, "Merkle proof invalid: root mismatch");
+    total_included = total_included + 1;
+    return true;
+  }
+
+  // Prove inclusion of a specific token commitment
+  transition prove_token_inclusion(leaf_index: Field, expected_value: Field): Boolean {
+    let commitment: TokenCommitment = get_commitment(leaf_index);
+    assert(commitment.value == expected_value, "Commitment value mismatch");
+    let leaf: Field = commit_token(commitment);
+    let proof: MerklePath = get_merkle_proof(leaf_index);
+    let computed_root: Field = compute_root(leaf, proof);
+    assert(computed_root == merkle_root, "Token not in tree");
+    total_included = total_included + 1;
+    return true;
+  }
+
+  // Update the Merkle root
+  transition update_root(new_root: Field) {
+    assert(new_root != merkle_root, "New root must differ from current");
+    merkle_root = new_root;
+  }
+}

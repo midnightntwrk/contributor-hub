@@ -1,0 +1,81 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+
+// Counter / Stateful Witness Example — Midnight Compact
+// Demonstrates stateful witnesses where the provider maintains internal state
+
+// --- Types ---
+
+struct ActionRecord {
+  action_id: Field;
+  actor_hash: Field;
+  timestamp: Uint<64>;
+  nonce: Field;
+}
+
+// --- Witness Declarations ---
+
+// Stateful: returns a monotonically increasing nonce (no arguments)
+witness next_nonce(): Field;
+
+// Stateful: returns a unique action ID
+witness next_action_id(): Field;
+
+// Combined stateful + composite: builds a full ActionRecord
+witness build_action_record(actor_hash: Field): ActionRecord;
+
+// --- Circuit Functions ---
+
+fn validate_action_record(record: ActionRecord, expected_actor: Field) -> Boolean {
+  let actor_ok: Boolean = record.actor_hash == expected_actor;
+  let nonce_ok: Boolean = record.nonce > 0;
+  let id_ok: Boolean = record.action_id > 0;
+  return actor_ok && nonce_ok && id_ok;
+}
+
+// --- Contract ---
+
+contract CounterWitnessExample {
+
+  global_nonce: Field;
+  processed_actions: Field;
+  last_actor_hash: Field;
+  last_timestamp: Uint<64>;
+
+  constructor() {
+    global_nonce = 0;
+    processed_actions = 0;
+    last_actor_hash = 0;
+    last_timestamp = 0;
+  }
+
+  // Submit an action with a stateful nonce
+  transition submit_action(actor_hash: Field): Field {
+    let nonce: Field = next_nonce();
+    assert(nonce > global_nonce, "Nonce must be greater than current global nonce");
+    global_nonce = nonce;
+    processed_actions = processed_actions + 1;
+    last_actor_hash = actor_hash;
+    return nonce;
+  }
+
+  // Submit a full action record with stateful IDs and nonces
+  transition submit_full_action(actor_hash: Field): Field {
+    let record: ActionRecord = build_action_record(actor_hash);
+    let valid: Boolean = validate_action_record(record, actor_hash);
+    assert(valid, "Invalid action record");
+    assert(record.nonce > global_nonce, "Nonce must be monotonically increasing");
+    assert(record.timestamp > last_timestamp, "Timestamp must be monotonically increasing");
+    global_nonce = record.nonce;
+    processed_actions = processed_actions + 1;
+    last_actor_hash = actor_hash;
+    last_timestamp = record.timestamp;
+    return record.action_id;
+  }
+
+  // View: get current state
+  transition get_state(): [Field, Field, Field] {
+    return [global_nonce, processed_actions, last_actor_hash];
+  }
+}
