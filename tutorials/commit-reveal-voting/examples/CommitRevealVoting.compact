@@ -1,0 +1,243 @@
+// CommitRevealVoting.compact
+// A privacy-preserving commit/reveal voting system on Midnight Network
+//
+// This contract implements a two-phase voting mechanism:
+//   Phase 1 (Commit): Voters submit Poseidon hash commitments to their votes
+//   Phase 2 (Reveal): Voters disclose their votes, which are verified against commitments
+//
+// This prevents vote buying, coercion, and front-running.
+
+module CommitRevealVoting {
+    import PoseidonHash;
+    import Ledger;
+    import Contract;
+    import Witness;
+
+    // ──────────────────────────────────────────────
+    // Type Definitions
+    // ──────────────────────────────────────────────
+
+    // Proposal lifecycle states
+    enum ProposalState {
+        Created,        // Proposal initialized but voting not started
+        CommitOpen,     // Accepting vote commitments
+        RevealOpen,     // Accepting vote reveals
+        Closed          // Voting complete, results available
+    }
+
+    // Represents a single voting proposal
+    struct Proposal {
+        title: Bytes<64>,                    // Human-readable title
+        options: Vector<Bytes<32>, 16>,      // Up to 16 voting options
+        optionCount: Uint<8>,                // Actual number of options
+        commitDeadline: Uint<64>,            // Block height for commit phase end
+        revealDeadline: Uint<64>,            // Block height for reveal phase end
+        state: ProposalState,                // Current lifecycle state
+        totalCommitted: Uint<32>,            // Number of commitments submitted
+        totalRevealed: Uint<32>              // Number of votes revealed
+    }
+
+    // Record stored for each commitment
+    struct CommitmentRecord {
+        commitment: Field,                   // The Poseidon hash commitment
+        isRevealed: Boolean,                 // Whether this vote has been revealed
+        revealedChoice: Uint<8>              // The actual vote choice (valid only if revealed)
+    }
+
+    // ──────────────────────────────────────────────
+    // Ledger (On-Chain State)
+    // ──────────────────────────────────────────────
+
+    ledger {
+        // Current proposal (simplified: one active proposal at a time)
+        proposal: Proposal,
+
+        // Maps commitment hash to its record
+        commitments: Map<Field, CommitmentRecord>,
+
+        // Tracks whether a voter has already submitted a commitment
+        hasCommitted: Map<Bytes<32>, Boolean>,
+
+        // Per-option vote tally (indexed by option number)
+        tally: Vector<Uint<32>, 16>,
+
+        // Address of the proposal creator / admin
+        admin: Bytes<32>,
+
+        // Total number of registered voters (for quorum)
+        registeredVoterCount: Uint<32>
+    }
+
+    // ──────────────────────────────────────────────
+    // Circuits (Contract Functions)
+    // ──────────────────────────────────────────────
+
+    // Create a new voting proposal. Only callable once; sets the admin.
+    circuit createProposal(
+        title: Bytes<64>,
+        optionNames: Vector<Bytes<32>, 16>,
+        numOptions: Uint<8>,
+        commitDurationBlocks: Uint<64>,
+        revealDurationBlocks: Uint<64>
+    ): Boolean {
+        // Validate option count
+        assert(numOptions >= 2, "Need at least 2 options");
+        assert(numOptions <= 16, "Maximum 16 options allowed");
+
+        let currentHeight: Uint<64> = currentBlockHeight();
+
+        proposal = Proposal {
+            title: title,
+            options: optionNames,
+            optionCount: numOptions,
+            commitDeadline: currentHeight + commitDurationBlocks,
+            revealDeadline: currentHeight + commitDurationBlocks + revealDurationBlocks,
+            state: ProposalState.CommitOpen,
+            totalCommitted: 0,
+            totalRevealed: 0
+        };
+
+        // Initialize tally counters to zero
+        let i: Uint<8> = 0;
+        while (i < numOptions) {
+            tally[i] = 0;
+            i = i + 1;
+        }
+
+        admin = callerAddress();
+        return true;
+    }
+
+    // Submit a vote commitment during the commit phase.
+    // The commitmentHash is computed off-chain as:
+    //   PoseidonHash(voterAddress, voteChoice, secretSalt)
+    circuit commit(commitmentHash: Field): Boolean {
+        // Verify we are in the commit phase
+        assert(proposal.state == ProposalState.CommitOpen, "Commit phase is not open");
+
+        // Verify the commit deadline has not passed
+        assert(currentBlockHeight() <= proposal.commitDeadline, "Commit phase has ended");
+
+        // Identify the voter
+        let voterAddr: Bytes<32> = callerAddress();
+
+        // Prevent double-committing
+        assert(!hasCommitted[voterAddr], "Voter has already committed");
+
+        // Prevent hash collision (defense in depth)
+        assert(commitments[commitmentHash] == null, "Commitment already exists");
+
+        // Store the commitment
+        commitments[commitmentHash] = CommitmentRecord {
+            commitment: commitmentHash,
+            isRevealed: false,
+            revealedChoice: 0
+        };
+
+        // Mark voter as committed
+        hasCommitted[voterAddr] = true;
+
+        // Increment counter
+        proposal.totalCommitted = proposal.totalCommitted + 1;
+
+        return true;
+    }
+
+    // Admin function: Transition from Commit phase to Reveal phase.
+    // Can only be called after the commit deadline.
+    circuit openRevealPhase(): Boolean {
+        assert(callerAddress() == admin, "Only admin can transition phases");
+        assert(proposal.state == ProposalState.CommitOpen, "Not in commit phase");
+        assert(currentBlockHeight() > proposal.commitDeadline, "Commit deadline not yet reached");
+
+        proposal.state = ProposalState.RevealOpen;
+        return true;
+    }
+
+    // Reveal a previously committed vote during the reveal phase.
+    // The contract recomputes PoseidonHash(voterAddress, voteChoice, salt)
+    // and verifies it matches the stored commitment.
+    circuit reveal(voteChoice: Uint<8>, salt: Field): Boolean {
+        // Verify we are in the reveal phase
+        assert(proposal.state == ProposalState.RevealOpen, "Reveal phase is not open");
+
+        // Verify the reveal deadline has not passed
+        assert(currentBlockHeight() <= proposal.revealDeadline, "Reveal phase has ended");
+
+        // Validate vote choice range
+        assert(voteChoice < proposal.optionCount, "Invalid vote choice");
+
+        // Identify the voter
+        let voterAddr: Bytes<32> = callerAddress();
+
+        // Recompute the commitment hash
+        let recomputedHash: Field = poseidonHash(voterAddr, voteChoice, salt);
+
+        // Look up the commitment
+        let record: CommitmentRecord = commitments[recomputedHash];
+        assert(record != null, "No matching commitment found");
+
+        // Prevent double-reveal
+        assert(!record.isRevealed, "Vote has already been revealed");
+
+        // Mark as revealed and store the choice
+        record.isRevealed = true;
+        record.revealedChoice = voteChoice;
+        commitments[recomputedHash] = record;
+
+        // Update tally
+        tally[voteChoice] = tally[voteChoice] + 1;
+
+        // Increment revealed counter
+        proposal.totalRevealed = proposal.totalRevealed + 1;
+
+        return true;
+    }
+
+    // Admin function: Close the proposal after the reveal deadline.
+    // Returns the final vote tally.
+    circuit closeProposal(): Vector<Uint<32>, 16> {
+        assert(callerAddress() == admin, "Only admin can close proposal");
+        assert(proposal.state == ProposalState.RevealOpen, "Not in reveal phase");
+        assert(currentBlockHeight() > proposal.revealDeadline, "Reveal deadline not yet reached");
+
+        proposal.state = ProposalState.Closed;
+        return tally;
+    }
+
+    // Query: Get the final results (only valid after closing).
+    circuit getResults(): Vector<Uint<32>, 16> {
+        assert(proposal.state == ProposalState.Closed, "Proposal not yet closed");
+        return tally;
+    }
+
+    // Query: Get participation statistics.
+    circuit getParticipation(): (Uint<32>, Uint<32>) {
+        return (proposal.totalCommitted, proposal.totalRevealed);
+    }
+
+    // Query: Get the current proposal state.
+    circuit getState(): ProposalState {
+        return proposal.state;
+    }
+
+    // ──────────────────────────────────────────────
+    // Advanced: Quorum-aware close
+    // ──────────────────────────────────────────────
+
+    // Close the proposal with a quorum check.
+    // Returns (tally, quorumMet) where quorumMet indicates whether
+    // the minimum number of votes was reached.
+    circuit closeProposalWithQuorum(
+        minimumVotes: Uint<32>
+    ): (Vector<Uint<32>, 16>, Boolean) {
+        assert(callerAddress() == admin, "Only admin can close proposal");
+        assert(proposal.state == ProposalState.RevealOpen, "Not in reveal phase");
+        assert(currentBlockHeight() > proposal.revealDeadline, "Reveal deadline not yet reached");
+
+        proposal.state = ProposalState.Closed;
+
+        let quorumMet: Boolean = proposal.totalRevealed >= minimumVotes;
+        return (tally, quorumMet);
+    }
+}
