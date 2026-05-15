@@ -1,0 +1,483 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+/**
+ * Example Oracle Consumer: Private DCA (Dollar-Cost Averaging) Contract
+ *
+ * This contract demonstrates how a dApp on Midnight Network
+ * consumes Oracle data while preserving privacy. It implements
+ * a simple DCA strategy where:
+ *
+ * 1. Users deposit funds and configure a DCA schedule
+ * 2. The contract uses Oracle price data to execute purchases
+ * 3. ZK proofs ensure the purchase price is within acceptable bounds
+ *    without revealing the user's exact strategy to the network
+ *
+ * This showcases the Oracle patterns described in the tutorial,
+ * specifically the Request-Response pattern with ZK privacy.
+ */
+
+// Import the Oracle contract interface
+import { OraclePriceFeed } from './oracle-contract.compact';
+
+// === Data Types ===
+
+enum DCAStatus {
+    Active,      // DCA is running
+    Paused,      // User paused the DCA
+    Completed,   // All scheduled purchases are done
+    Cancelled    // User cancelled the DCA
+}
+
+struct DCAOrder {
+    // Unique order identifier
+    orderId: Uint<64>,
+
+    // Owner of this DCA order (private — only owner can see)
+    owner: Encrypted<Bytes<32>>,
+
+    // Status
+    status: DCAStatus,
+
+    // Amount to purchase per interval (in base currency, fixed-point)
+    amountPerInterval: Uint<128>,
+
+    // Remaining total budget (fixed-point)
+    remainingBudget: Uint<128>,
+
+    // Price bounds: only execute if Oracle price is within range
+    minPrice: Uint<128>,
+    maxPrice: Uint<128>,
+
+    // Interval between purchases (in blocks)
+    intervalBlocks: Uint<64>,
+
+    // Last purchase block height
+    lastPurchaseBlock: Uint<64>,
+
+    // Total purchases made
+    purchaseCount: Uint<32>,
+
+    // Maximum number of purchases
+    maxPurchases: Uint<32>,
+
+    // Accumulated purchased amount (private)
+    totalPurchased: Encrypted<Uint<128>>,
+
+    // Average purchase price (private, for reporting)
+    avgPurchasePrice: Encrypted<Uint<128>>
+}
+
+struct PurchaseRecord {
+    orderId: Uint<64>,
+    blockHeight: Uint<64>,
+    oraclePrice: Uint<128>,
+    amountSpent: Uint<128>,
+    amountReceived: Uint<128>,
+    confidence: Uint<8>
+}
+
+// === Main Contract ===
+
+contract PrivateDCAOracle {
+
+    // === State ===
+
+    // Reference to the Oracle contract
+    oracle: OraclePriceFeed,
+
+    // User DCA orders (private state — encrypted on-chain)
+    orders: Mapping<Uint<64>, DCAOrder>,
+
+    // Next order ID
+    nextOrderId: Uint<64>,
+
+    // Purchase history (for auditing — only hashes stored on-chain)
+    purchaseHistory: Vector<Bytes<32>, 10000>,
+
+    // Contract admin
+    admin: Bytes<32>,
+
+    // Minimum Oracle confidence required for execution
+    minOracleConfidence: Uint<8>,
+
+    // Maximum Oracle staleness for DCA execution (blocks)
+    maxOracleStalenessBlocks: Uint<64>,
+
+    // === Constructor ===
+
+    constructor(
+        oracleContract: OraclePriceFeed,
+        adminKey: Bytes<32>,
+        minConfidence: Uint<8>
+    ) {
+        this.oracle = oracleContract;
+        this.admin = adminKey;
+        this.minOracleConfidence = minConfidence;
+        this.nextOrderId = 1;
+        this.maxOracleStalenessBlocks = 100; // ~10 minutes at 6s blocks
+    }
+
+    // === User Functions ===
+
+    /**
+     * Create a new DCA order
+     *
+     * The user's strategy parameters are encrypted so that
+     * other network participants cannot see the strategy details.
+     *
+     * @param amountPerInterval - How much to spend per interval (fixed-point)
+     * @param minPrice - Minimum Oracle price to execute (fixed-point)
+     * @param maxPrice - Maximum Oracle price to execute (fixed-point)
+     * @param intervalBlocks - Blocks between purchases
+     * @param maxPurchases - Total number of purchases to make
+     */
+    circuit createOrder(
+        amountPerInterval: Uint<128>,
+        minPrice: Uint<128>,
+        maxPrice: Uint<128>,
+        intervalBlocks: Uint<64>,
+        maxPurchases: Uint<32>
+    ) {
+        // Validate inputs
+        assert!(amountPerInterval > 0, "Amount must be positive");
+        assert!(minPrice < maxPrice, "Min price must be less than max price");
+        assert!(intervalBlocks >= 10, "Interval must be at least 10 blocks");
+        assert!(maxPurchases > 0 && maxPurchases <= 1000, "Purchases must be 1-1000");
+
+        // Calculate total budget
+        let totalBudget = amountPerInterval * maxPurchases;
+
+        // Create the order with encrypted owner identity
+        let orderId = this.nextOrderId;
+        let order = DCAOrder {
+            orderId: orderId,
+            owner: encrypt(caller()),  // Encrypted — only the owner can decrypt
+            status: DCAStatus.Active,
+            amountPerInterval: amountPerInterval,
+            remainingBudget: totalBudget,
+            minPrice: minPrice,
+            maxPrice: maxPrice,
+            intervalBlocks: intervalBlocks,
+            lastPurchaseBlock: getCurrentBlockHeight(),
+            purchaseCount: 0,
+            maxPurchases: maxPurchases,
+            totalPurchased: encrypt(0 as Uint<128>),
+            avgPurchasePrice: encrypt(0 as Uint<128>)
+        };
+
+        this.orders.set(orderId, order);
+        this.nextOrderId = orderId + 1;
+
+        // Emit event (order ID is public, strategy details are private)
+        emit OrderCreated(orderId);
+    }
+
+    /**
+     * Execute a DCA purchase for an order
+     *
+     * This is the core Oracle consumer function. It:
+     * 1. Checks if the order is eligible for execution
+     * 2. Reads the Oracle price
+     * 3. Verifies the price is within the order's bounds (ZK proof)
+     * 4. Executes the purchase
+     * 5. Updates the order state
+     *
+     * Anyone can call this function (it's permissionless),
+     * but it only executes if conditions are met.
+     *
+     * @param orderId - The order to execute
+     */
+    circuit executePurchase(orderId: Uint<64>) {
+        let order = this.orders.get(orderId);
+
+        // Check: order exists and is active
+        assert!(order.status == DCAStatus.Active, "Order is not active");
+
+        // Check: sufficient time has passed since last purchase
+        let currentBlock = getCurrentBlockHeight();
+        assert!(
+            currentBlock >= order.lastPurchaseBlock + order.intervalBlocks,
+            "Too early for next purchase"
+        );
+
+        // Check: budget remaining
+        assert!(order.remainingBudget >= order.amountPerInterval, "Insufficient budget");
+
+        // Check: purchase count not exceeded
+        assert!(order.purchaseCount < order.maxPurchases, "Max purchases reached");
+
+        // === Oracle Integration ===
+
+        // Read the Oracle price
+        let oracleData = this.oracle.getLatestPrice();
+
+        // Verify Oracle data is fresh
+        assert!(this.oracle.isFresh(), "Oracle data is stale");
+
+        // Verify Oracle confidence meets our minimum
+        assert!(
+            oracleData.confidence >= this.minOracleConfidence,
+            "Oracle confidence too low"
+        );
+
+        // ZK Range Proof: prove the price is within bounds
+        // This is the key privacy feature — we prove the price check
+        // passed without revealing the exact price bounds to observers
+        let verifiedPrice = this.oracle.getAndProvePriceInRange(
+            order.minPrice,
+            order.maxPrice
+        );
+
+        // === Execute Purchase ===
+
+        // Calculate the amount to buy (in the target asset)
+        // For simplicity: amountReceived = amountSpent / price
+        // In fixed-point: amountReceived = (amountSpent * 10^8) / price
+        let amountSpent = order.amountPerInterval;
+        let amountReceived = (amountSpent * 100000000) / verifiedPrice;
+
+        // Update order state
+        order.remainingBudget = order.remainingBudget - amountSpent;
+        order.lastPurchaseBlock = currentBlock;
+        order.purchaseCount = order.purchaseCount + 1;
+
+        // Update accumulated totals (encrypted — private)
+        let currentTotal = decrypt(order.totalPurchased);
+        let newTotal = currentTotal + amountReceived;
+        order.totalPurchased = encrypt(newTotal);
+
+        // Update average price (encrypted — private)
+        let currentAvg = decrypt(order.avgPurchasePrice);
+        let newAvg = ((currentAvg * order.purchaseCount) + verifiedPrice) /
+                     (order.purchaseCount + 1);
+        order.avgPurchasePrice = encrypt(newAvg);
+
+        // Check if order is complete
+        if (order.purchaseCount >= order.maxPurchases ||
+            order.remainingBudget < order.amountPerInterval) {
+            order.status = DCAStatus.Completed;
+        }
+
+        // Store updated order
+        this.orders.set(orderId, order);
+
+        // Create purchase record hash for audit trail
+        let record = PurchaseRecord {
+            orderId: orderId,
+            blockHeight: currentBlock,
+            oraclePrice: verifiedPrice,
+            amountSpent: amountSpent,
+            amountReceived: amountReceived,
+            confidence: oracleData.confidence
+        };
+        let recordHash = hash(record);
+        this.purchaseHistory.push(recordHash);
+
+        // Emit event (purchase is public, strategy details remain private)
+        emit PurchaseExecuted(orderId, currentBlock, oracleData.confidence);
+    }
+
+    /**
+     * Pause a DCA order
+     *
+     * Only the order owner can pause their order.
+     * Uses ZK proof of ownership without revealing identity.
+     */
+    circuit pauseOrder(orderId: Uint<64>) {
+        let order = this.orders.get(orderId);
+
+        // Prove ownership without revealing identity
+        assert!(decrypt(order.owner) == caller(), "Not the order owner");
+
+        order.status = DCAStatus.Paused;
+        this.orders.set(orderId, order);
+
+        emit OrderPaused(orderId);
+    }
+
+    /**
+     * Resume a paused DCA order
+     */
+    circuit resumeOrder(orderId: Uint<64>) {
+        let order = this.orders.get(orderId);
+
+        assert!(decrypt(order.owner) == caller(), "Not the order owner");
+        assert!(order.status == DCAStatus.Paused, "Order is not paused");
+
+        order.status = DCAStatus.Active;
+        order.lastPurchaseBlock = getCurrentBlockHeight(); // Reset timer
+        this.orders.set(orderId, order);
+
+        emit OrderResumed(orderId);
+    }
+
+    /**
+     * Cancel a DCA order and withdraw remaining funds
+     *
+     * @param orderId - The order to cancel
+     * @returns The remaining budget to be refunded
+     */
+    circuit cancelOrder(orderId: Uint<64>): Uint<128> {
+        let order = this.orders.get(orderId);
+
+        assert!(decrypt(order.owner) == caller(), "Not the order owner");
+        assert!(
+            order.status == DCAStatus.Active || order.status == DCAStatus.Paused,
+            "Cannot cancel completed/cancelled order"
+        );
+
+        let refund = order.remainingBudget;
+        order.remainingBudget = 0;
+        order.status = DCAStatus.Cancelled;
+        this.orders.set(orderId, order);
+
+        emit OrderCancelled(orderId, refund);
+
+        return refund;
+    }
+
+    // === Query Functions ===
+
+    /**
+     * Get order status (public info only)
+     *
+     * Returns non-sensitive fields. Private fields (owner, totals)
+     * are not accessible to other users.
+     */
+    circuit getOrderPublicInfo(orderId: Uint<64>): (
+        status: DCAStatus,
+        purchaseCount: Uint<32>,
+        maxPurchases: Uint<32>,
+        intervalBlocks: Uint<64>
+    ) {
+        let order = this.orders.get(orderId);
+
+        return (
+            status: order.status,
+            purchaseCount: order.purchaseCount,
+            maxPurchases: order.maxPurchases,
+            intervalBlocks: order.intervalBlocks
+        );
+    }
+
+    /**
+     * Get private order info (only for the owner)
+     *
+     * Owner must prove they own the order via ZK proof.
+     */
+    circuit getOrderPrivateInfo(orderId: Uint<64>): DCAOrder {
+        let order = this.orders.get(orderId);
+
+        // ZK proof of ownership
+        assert!(decrypt(order.owner) == caller(), "Not the order owner");
+
+        return order;
+    }
+
+    /**
+     * Get a summary of DCA performance (private — owner only)
+     *
+     * @returns Total purchased amount and average price
+     */
+    circuit getPerformanceSummary(orderId: Uint<64>): (
+        totalPurchased: Uint<128>,
+        avgPrice: Uint<128>,
+        purchaseCount: Uint<32>,
+        remainingBudget: Uint<128>
+    ) {
+        let order = this.orders.get(orderId);
+
+        assert!(decrypt(order.owner) == caller(), "Not the order owner");
+
+        return (
+            totalPurchased: decrypt(order.totalPurchased),
+            avgPrice: decrypt(order.avgPurchasePrice),
+            purchaseCount: order.purchaseCount,
+            remainingBudget: order.remainingBudget
+        );
+    }
+
+    // === Batch Execution ===
+
+    /**
+     * Batch execute multiple DCA orders
+     *
+     * Allows a caller to execute multiple orders in a single
+     * transaction, reducing gas costs and Oracle reads.
+     *
+     * @param orderIds - Array of order IDs to attempt execution for
+     * @returns Number of orders successfully executed
+     */
+    circuit batchExecute(orderIds: Vector<Uint<64>, 50>): Uint<32> {
+        let executed: Uint<32> = 0;
+
+        for (let i = 0; i < orderIds.length; i = i + 1) {
+            let orderId = orderIds.get(i);
+            let order = this.orders.get(orderId);
+
+            // Skip non-active orders
+            if (order.status != DCAStatus.Active) {
+                continue;
+            }
+
+            // Check timing
+            let currentBlock = getCurrentBlockHeight();
+            if (currentBlock < order.lastPurchaseBlock + order.intervalBlocks) {
+                continue;
+            }
+
+            // Try to execute (catch errors silently for batch)
+            try {
+                this.executePurchase(orderId);
+                executed = executed + 1;
+            } catch (e) {
+                // Skip orders that fail (e.g., price out of range)
+                continue;
+            }
+        }
+
+        return executed;
+    }
+
+    // === Admin Functions ===
+
+    /**
+     * Update the minimum Oracle confidence requirement
+     */
+    circuit setMinConfidence(newMinConfidence: Uint<8>) {
+        assert!(caller() == decrypt(this.admin), "Not admin");
+        assert!(newMinConfidence <= 100, "Invalid confidence");
+        this.minOracleConfidence = newMinConfidence;
+    }
+
+    /**
+     * Emergency pause — cancels all active orders
+     */
+    circuit emergencyPause() {
+        assert!(caller() == decrypt(this.admin), "Not admin");
+        // In a real implementation, iterate through orders and pause them
+        emit EmergencyPauseActivated();
+    }
+}
+
+// === Events ===
+
+event OrderCreated(orderId: Uint<64>);
+event PurchaseExecuted(orderId: Uint<64>, blockHeight: Uint<64>, oracleConfidence: Uint<8>);
+event OrderPaused(orderId: Uint<64>);
+event OrderResumed(orderId: Uint<64>);
+event OrderCancelled(orderId: Uint<64>, refundAmount: Uint<128>);
+event EmergencyPauseActivated();
