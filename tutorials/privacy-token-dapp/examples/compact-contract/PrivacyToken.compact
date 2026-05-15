@@ -1,0 +1,79 @@
+// PrivacyToken.compact - Midnight Network Privacy Token
+// SPDX-License-Identifier: Apache-2.0
+
+module PrivacyToken {
+    shielded owner: PublicKey;
+    shielded totalSupply: Field;
+    shielded balances: MerkleMap<PublicKey, Field>;
+    shielded nullifiers: Set<Field>;
+
+    event Transfer(from: PublicKey, to: PublicKey);
+    event Mint(to: PublicKey);
+    event Burn(from: PublicKey);
+
+    constructor(initialOwner: PublicKey, supply: secret Field) {
+        owner = initialOwner;
+        totalSupply = supply;
+        balances.insert(initialOwner, supply);
+        emit Mint(initialOwner);
+    }
+
+    function mint(to: PublicKey, amount: secret Field): Bool {
+        proof {
+            assert(msg.sender == owner, "Only owner can mint");
+            assert(amount > 0, "Amount must be positive");
+        }
+        let currentBalance = balances.get(to) ?? Field(0);
+        balances.insert(to, currentBalance + amount);
+        totalSupply = totalSupply + amount;
+        emit Mint(to);
+        return true;
+    }
+
+    function transfer(
+        to: PublicKey,
+        amount: secret Field,
+        nullifier: secret Field,
+        senderBalanceProof: secret MerkleProof
+    ): Bool {
+        proof {
+            let senderBalance = balances.get(msg.sender);
+            assert(senderBalance >= amount, "Insufficient balance");
+            assert(amount > 0, "Amount must be positive");
+            assert(!nullifiers.contains(nullifier), "Nullifier already used");
+            assert(
+                senderBalanceProof.verify(balances.root(), msg.sender, senderBalance),
+                "Invalid balance proof"
+            );
+        }
+        nullifiers.insert(nullifier);
+        let sBal = balances.get(msg.sender) ?? Field(0);
+        let rBal = balances.get(to) ?? Field(0);
+        balances.insert(msg.sender, sBal - amount);
+        balances.insert(to, rBal + amount);
+        emit Transfer(msg.sender, to);
+        return true;
+    }
+
+    function getBalanceProof(account: PublicKey): secret MerkleProof {
+        let balance = balances.get(account);
+        return balances.prove(account, balance);
+    }
+
+    function burn(amount: secret Field, balanceProof: secret MerkleProof): Bool {
+        proof {
+            let balance = balances.get(msg.sender);
+            assert(balance >= amount, "Insufficient balance");
+            assert(balanceProof.verify(balances.root(), msg.sender, balance), "Invalid proof");
+        }
+        let currentBalance = balances.get(msg.sender) ?? Field(0);
+        balances.insert(msg.sender, currentBalance - amount);
+        totalSupply = totalSupply - amount;
+        emit Burn(msg.sender);
+        return true;
+    }
+
+    function getTotalSupply(): Field {
+        return totalSupply;
+    }
+}
