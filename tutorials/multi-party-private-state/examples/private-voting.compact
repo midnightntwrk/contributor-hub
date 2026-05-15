@@ -1,0 +1,171 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+/**
+ * Private Voting DAO Example
+ * 
+ * Demonstrates Pattern 3: Threshold-Private State
+ * 
+ * Each member has private voting power. Votes are cast as
+ * encrypted commitments. The final tally is revealed only
+ * after a threshold of members provide decryption shares.
+ */
+
+enum ProposalStatus { Active, Tallying, Finalized }
+
+contract PrivateVotingDAO {
+
+    // ── Public State ──────────────────────────────────────
+    public proposalId: Field;
+    public proposalDescription: EncryptedBytes<512>;
+    public status: ProposalStatus;
+    public voteCommitments: Array<Field, 256>;  // commitment per voter
+    public encryptedYesTally: Field;            // homomorphic sum
+    public encryptedNoTally: Field;             // homomorphic sum
+    public deadline: uint<64>;
+    public threshold: uint<8>;                  // k-of-n for finalization
+    public decryptionShares: Array<Field, 256>;
+    public shareCount: uint<8>;
+    public finalYesCount: uint<64>;
+    public finalNoCount: uint<64>;
+
+    // ── Private State ─────────────────────────────────────
+
+    // Each DAO member's private state
+    private memberState: Map<MemberId, {
+        votingPower: Field,       // private — no one else sees this
+        hasVoted: bool,
+        voteChoice: Field,        // 0 (no) or 1 (yes), kept secret
+        decryptionKey: Field,     // share of threshold decryption key
+        membershipProof: Field    // proof of valid membership
+    }>;
+
+    // ── Transitions ───────────────────────────────────────
+
+    /**
+     * Cast a private vote.
+     * 
+     * The voter submits:
+     *   - encryptedVote: their vote encrypted under the DAO's shared key
+     *   - powerProof: ZK proof that votingPower > 0 (without revealing power)
+     *   - voteProof: ZK proof that vote is 0 or 1 (binary constraint)
+     *   - commitment: hash of (voteChoice, secret) for later verification
+     */
+    transition castVote(
+        member: MemberId,
+        encryptedVote: EncryptedField,
+        commitment: Field,
+        powerProof: Proof,
+        voteProof: Proof
+    ) {
+        assert(status == ProposalStatus.Active);
+        assert(currentBlock() < deadline);
+        assert(!memberState[member].hasVoted);
+
+        // Verify the member has non-zero voting power (privately)
+        assert(verify(
+            powerProof,
+            memberState[member].votingPower,
+            "gt_zero"
+        ));
+
+        // Verify the vote is binary (0 or 1)
+        assert(verify(
+            voteProof,
+            memberState[member].voteChoice,
+            "is_binary"
+        ));
+
+        // Add encrypted vote to the homomorphic tally
+        // yesCount += vote * votingPower (encrypted)
+        // noCount += (1 - vote) * votingPower (encrypted)
+        encryptedYesTally = homomorphicAdd(
+            encryptedYesTally,
+            homomorphicMultiply(encryptedVote, memberState[member].votingPower)
+        );
+        encryptedNoTally = homomorphicAdd(
+            encryptedNoTally,
+            homomorphicMultiply(
+                homomorphicNegate(encryptedVote),
+                memberState[member].votingPower
+            )
+        );
+
+        // Store commitment for verification
+        voteCommitments[member.index()] = commitment;
+        memberState[member].hasVoted = true;
+    }
+
+    /**
+     * Submit a decryption share for threshold finalization.
+     * 
+     * Each member contributes their share of the threshold key.
+     * Once `threshold` shares are collected, the tally can be decrypted.
+     */
+    transition submitDecryptionShare(
+        member: MemberId,
+        share: Field,
+        shareProof: Proof    // proves share is correctly derived
+    ) {
+        assert(status == ProposalStatus.Active);
+        assert(currentBlock() >= deadline);
+        assert(memberState[member].hasVoted);
+        
+        // Verify the decryption share is valid
+        assert(verify(
+            shareProof,
+            share,
+            memberState[member].decryptionKey,
+            "consistent_share"
+        ));
+
+        decryptionShares[shareCount] = share;
+        shareCount += 1;
+
+        // Auto-transition to tallying when threshold is met
+        if (shareCount >= threshold) {
+            status = ProposalStatus.Tallying;
+        }
+    }
+
+    /**
+     * Finalize the vote tally using collected decryption shares.
+     * 
+     * Combines threshold shares to decrypt the homomorphic tally
+     * and reveals the final yes/no counts.
+     */
+    transition finalize(
+        decryptionProof: Proof,
+        yesCount: uint<64>,
+        noCount: uint<64>
+    ) {
+        assert(status == ProposalStatus.Tallying);
+        assert(shareCount >= threshold);
+
+        // Verify the decryption is correct
+        assert(verify(
+            decryptionProof,
+            decryptionShares,
+            encryptedYesTally,
+            encryptedNoTally,
+            yesCount,
+            noCount
+        ));
+
+        finalYesCount = yesCount;
+        finalNoCount = noCount;
+        status = ProposalStatus.Finalized;
+    }
+}
