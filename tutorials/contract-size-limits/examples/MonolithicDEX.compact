@@ -1,0 +1,240 @@
+// ============================================================================
+// MonolithicDEX.compact — EXAMPLE: Contract that exceeds the 13-circuit limit
+// ============================================================================
+// This is an ANTI-PATTERN example. Do NOT deploy this contract.
+// It contains 18 circuits and will fail Lace deployment.
+// See the split versions below for the recommended approach.
+// ============================================================================
+
+contract MonolithicDEX {
+  ledger {
+    pools: Map<Bytes<32>, PoolData>;
+    lp_tokens: Map<Bytes<32>, Uint<64>>;
+    governance_votes: Map<Bytes<32>, VoteData>;
+    swap_fee: Uint<64>;
+    min_liquidity: Uint<64>;
+    proposal_count: Uint<64>;
+    user_balances: Map<Bytes<32>, Uint<64>>;
+    total_supply: Uint<64>;
+  }
+
+  // --- Swap circuits (5 circuits) ---
+
+  circuit swap(
+    user: Bytes<32>,
+    token_in: Bytes<32>,
+    token_out: Bytes<32>,
+    amount_in: Uint<64>,
+    min_amount_out: Uint<64>
+  ): Uint<64> {
+    let price = calculate_price(token_in, token_out, amount_in);
+    assert price >= min_amount_out, "Slippage exceeded";
+    let fee = amount_in * ledger.swap_fee / 10000;
+    let net_amount = amount_in - fee;
+    update_pool_reserves(token_in, token_out, net_amount, price);
+    ledger.user_balances[user] = ledger.user_balances[user] + price;
+    return price;
+  }
+
+  circuit calculate_price(
+    token_in: Bytes<32>,
+    token_out: Bytes<32>,
+    amount: Uint<64>
+  ): Uint<64> {
+    let pool = ledger.pools[token_in ++ token_out];
+    let reserve_in = pool.reserve_a;
+    let reserve_out = pool.reserve_b;
+    return (amount * reserve_out) / (reserve_in + amount);
+  }
+
+  circuit verify_slippage(
+    expected: Uint<64>,
+    actual: Uint<64>,
+    tolerance_bps: Uint<64>
+  ): void {
+    let min_acceptable = expected * (10000 - tolerance_bps) / 10000;
+    assert actual >= min_acceptable, "Slippage too high";
+  }
+
+  circuit update_pool_reserves(
+    token_in: Bytes<32>,
+    token_out: Bytes<32>,
+    amount_in: Uint<64>,
+    amount_out: Uint<64>
+  ): void {
+    let key = token_in ++ token_out;
+    let pool = ledger.pools[key];
+    pool.reserve_a = pool.reserve_a + amount_in;
+    pool.reserve_b = pool.reserve_b - amount_out;
+    ledger.pools[key] = pool;
+  }
+
+  circuit emit_swap_event(
+    user: Bytes<32>,
+    token_in: Bytes<32>,
+    token_out: Bytes<32>,
+    amount: Uint<64>
+  ): void {
+    // Event emission handled by the ledger update
+    nullifier(user, amount);
+  }
+
+  // --- Liquidity circuits (6 circuits) ---
+
+  circuit add_liquidity(
+    user: Bytes<32>,
+    token_a: Bytes<32>,
+    token_b: Bytes<32>,
+    amount_a: Uint<64>,
+    amount_b: Uint<64>
+  ): Uint<64> {
+    let lp_tokens = calculate_lp_tokens(token_a, token_b, amount_a, amount_b);
+    verify_minimum_liquidity(lp_tokens);
+    let key = token_a ++ token_b;
+    let pool = ledger.pools[key];
+    pool.reserve_a = pool.reserve_a + amount_a;
+    pool.reserve_b = pool.reserve_b + amount_b;
+    ledger.pools[key] = pool;
+    update_lp_balances(user, key, lp_tokens);
+    return lp_tokens;
+  }
+
+  circuit remove_liquidity(
+    user: Bytes<32>,
+    token_a: Bytes<32>,
+    token_b: Bytes<32>,
+    lp_amount: Uint<64>
+  ): Uint<64> {
+    let key = token_a ++ token_b;
+    let pool = ledger.pools[key];
+    let total_lp = ledger.lp_tokens[key];
+    let share_a = (pool.reserve_a * lp_amount) / total_lp;
+    let share_b = (pool.reserve_b * lp_amount) / total_lp;
+    pool.reserve_a = pool.reserve_a - share_a;
+    pool.reserve_b = pool.reserve_b - share_b;
+    ledger.pools[key] = pool;
+    ledger.lp_tokens[key] = total_lp - lp_amount;
+    return share_a + share_b;
+  }
+
+  circuit calculate_lp_tokens(
+    token_a: Bytes<32>,
+    token_b: Bytes<32>,
+    amount_a: Uint<64>,
+    amount_b: Uint<64>
+  ): Uint<64> {
+    let key = token_a ++ token_b;
+    let total_lp = ledger.lp_tokens[key];
+    if total_lp == 0 {
+      return amount_a * amount_b; // initial liquidity
+    }
+    let pool = ledger.pools[key];
+    let lp_a = (total_lp * amount_a) / pool.reserve_a;
+    let lp_b = (total_lp * amount_b) / pool.reserve_b;
+    return lp_a; // return minimum
+  }
+
+  circuit verify_minimum_liquidity(lp_amount: Uint<64>): void {
+    assert lp_amount >= ledger.min_liquidity, "Below minimum liquidity";
+  }
+
+  circuit update_lp_balances(
+    user: Bytes<32>,
+    pool_key: Bytes<32>,
+    amount: Uint<64>
+  ): void {
+    let current = ledger.lp_tokens[pool_key];
+    ledger.lp_tokens[pool_key] = current + amount;
+  }
+
+  circuit claim_fees(
+    user: Bytes<32>,
+    pool_key: Bytes<32>
+  ): Uint<64> {
+    let lp_balance = ledger.user_balances[user];
+    let total_lp = ledger.lp_tokens[pool_key];
+    let pool = ledger.pools[pool_key];
+    let fee_share = (pool.fees_earned * lp_balance) / total_lp;
+    ledger.user_balances[user] = ledger.user_balances[user] + fee_share;
+    return fee_share;
+  }
+
+  // --- Governance circuits (7 circuits) ---
+
+  circuit create_proposal(
+    proposer: Bytes<32>,
+    description: Bytes<256>,
+    parameter_changes: Map<Bytes<32>, Uint<64>>
+  ): Uint<64> {
+    let proposal_id = ledger.proposal_count;
+    ledger.proposal_count = proposal_id + 1;
+    let vote_data: VoteData = {
+      proposer: proposer,
+      votes_for: 0,
+      votes_against: 0,
+      executed: false,
+      description: description
+    };
+    ledger.governance_votes[proposal_id.to_be_bytes()] = vote_data;
+    return proposal_id;
+  }
+
+  circuit cast_vote(
+    voter: Bytes<32>,
+    proposal_id: Uint<64>,
+    support: Bool
+  ): void {
+    let key = proposal_id.to_be_bytes();
+    let vote = ledger.governance_votes[key];
+    let voter_weight = ledger.user_balances[voter];
+    if support {
+      vote.votes_for = vote.votes_for + voter_weight;
+    } else {
+      vote.votes_against = vote.votes_against + voter_weight;
+    }
+    ledger.governance_votes[key] = vote;
+  }
+
+  circuit tally_votes(proposal_id: Uint<64>): Bool {
+    let key = proposal_id.to_be_bytes();
+    let vote = ledger.governance_votes[key];
+    let quorum = verify_quorum(vote.votes_for + vote.votes_against);
+    return quorum && (vote.votes_for > vote.votes_against);
+  }
+
+  circuit execute_proposal(proposal_id: Uint<64>): void {
+    let passed = tally_votes(proposal_id);
+    assert passed, "Proposal did not pass";
+    let key = proposal_id.to_be_bytes();
+    let vote = ledger.governance_votes[key];
+    assert !vote.executed, "Already executed";
+    vote.executed = true;
+    ledger.governance_votes[key] = vote;
+    update_parameters(proposal_id);
+  }
+
+  circuit verify_quorum(total_votes: Uint<64>): Bool {
+    let quorum_threshold = ledger.total_supply * 10 / 100; // 10%
+    return total_votes >= quorum_threshold;
+  }
+
+  circuit update_parameters(proposal_id: Uint<64>): void {
+    // Apply parameter changes from proposal
+    // Simplified: update swap fee
+    ledger.swap_fee = 30; // 0.3%
+  }
+
+  circuit archive_proposal(proposal_id: Uint<64>): void {
+    let key = proposal_id.to_be_bytes();
+    let vote = ledger.governance_votes[key];
+    assert vote.executed, "Cannot archive unexecuted proposal";
+    // Archive: zero out the data
+    ledger.governance_votes[key] = {
+      proposer: Bytes<32>.zero(),
+      votes_for: 0,
+      votes_against: 0,
+      executed: true,
+      description: Bytes<256>.zero()
+    };
+  }
+}
