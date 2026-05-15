@@ -1,0 +1,21 @@
+// Counter Contract — Simple contract for testing examples
+// Demonstrates basic state mutation and query patterns
+
+contract Counter {
+  ledger {
+    value: Counter<UInt64>;
+  }
+
+  circuit increment(): Void {
+    ledger.value.increment();
+  }
+
+  circuit decrement(): Void {
+    assert(ledger.value > 0, "Cannot decrement below zero");
+    ledger.value.decrement();
+  }
+
+  circuit queryValue(): UInt64 {
+    return ledger.value;
+  }
+}

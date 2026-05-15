@@ -1,0 +1,31 @@
+// Vault Contract — Token deposit/withdraw for integration testing
+// Demonstrates stateful operations and access control
+
+contract Vault {
+  ledger {
+    balance: Counter<UInt64>;
+    owner: Bytes<32>;
+  }
+
+  circuit deploy(owner: Bytes<32>): Void {
+    ledger.owner = owner;
+    ledger.balance = 0;
+  }
+
+  circuit deposit(amount: UInt64): Void {
+    ledger.balance += amount;
+  }
+
+  circuit withdraw(amount: UInt64): Void {
+    assert(ledger.balance >= amount, "Insufficient balance");
+    ledger.balance -= amount;
+  }
+
+  circuit getBalance(): UInt64 {
+    return ledger.balance;
+  }
+
+  circuit getOwner(): Bytes<32> {
+    return ledger.owner;
+  }
+}

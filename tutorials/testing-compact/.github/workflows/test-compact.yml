@@ -1,0 +1,75 @@
+# GitHub Actions CI Pipeline for Compact Contract Tests
+# Runs unit tests on every push/PR, integration tests on PRs only
+
+name: Test Compact Contracts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Install Compact compiler
+        run: npm install -g @midnight-ntwrk/compactc
+
+      - name: Compile contracts
+        run: |
+          mkdir -p build
+          compactc contracts/counter.compact build/counter
+          compactc contracts/vault.compact build/vault
+
+      - name: Run unit tests
+        run: npx vitest run tests/*.unit.test.ts --reporter=verbose
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: unit-tests
+
+    services:
+      midnight-node:
+        image: midnightntwrk/midnight-node:latest
+        ports:
+          - 9944:9944
+        options: >-
+          --health-cmd "curl -f http://localhost:9944/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Install Compact compiler
+        run: npm install -g @midnight-ntwrk/compactc
+
+      - name: Compile contracts
+        run: compactc contracts/vault.compact build/vault
+
+      - name: Run integration tests
+        run: npx vitest run tests/*.integration.test.ts --reporter=verbose
+        env:
+          NODE_URL: ws://localhost:9944
+          PROOF_SERVER_URL: http://localhost:6300
