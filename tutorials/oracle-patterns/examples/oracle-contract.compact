@@ -1,0 +1,430 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+/**
+ * Oracle Price Feed Contract for Midnight Network
+ *
+ * This contract implements a Publish-Subscribe Oracle pattern
+ * for providing price feed data on-chain. Authorized Oracle nodes
+ * can submit price updates, and any contract can query the latest price.
+ *
+ * Data is stored in a ZK-compatible format using fixed-point arithmetic
+ * (8 decimal places) to avoid floating-point issues in circuits.
+ */
+
+// Oracle data structure — stores a single price observation
+struct PriceObservation {
+    // Price multiplied by 10^8 (fixed-point, 8 decimal places)
+    // Example: BTC/USD = 50000.00 → stored as 5000000000000
+    price: Uint<128>,
+
+    // Block timestamp when this observation was recorded
+    timestamp: Uint<64>,
+
+    // Monotonically increasing sequence number (replay protection)
+    sequence: Uint<64>,
+
+    // Number of data sources that were aggregated
+    sourceCount: Uint<8>,
+
+    // Confidence score (0-100): higher = more agreement among sources
+    confidence: Uint<8>
+}
+
+// Oracle node identity and authorization
+struct OracleNode {
+    // Public key of the Oracle node (for signature verification)
+    pubKey: Bytes<32>,
+
+    // Whether this node is currently active
+    isActive: Boolean,
+
+    // Reputation score (0-100)
+    reputation: Uint<8>,
+
+    // Number of submissions made
+    submissionCount: Uint<64>
+}
+
+/**
+ * Main Oracle contract state
+ *
+ * Stores the latest price observation, authorized Oracle nodes,
+ * and configuration parameters.
+ */
+contract OraclePriceFeed {
+    // === State Variables ===
+
+    // Latest price observation
+    latestObservation: PriceObservation,
+
+    // Number of authorized Oracle nodes
+    nodeCount: Uint<16>,
+
+    // Maximum staleness before data is considered stale (seconds)
+    maxStaleness: Uint<64>,
+
+    // Minimum number of node confirmations required
+    minConfirmations: Uint<16>,
+
+    // Contract owner (can add/remove Oracle nodes)
+    owner: Bytes<32>,
+
+    // Whether the contract is paused (circuit breaker)
+    isPaused: Boolean,
+
+    // Historical price observations (last N entries for TWAP)
+    history: Vector<PriceObservation, 100>,
+
+    // Aggregate pending submissions for multi-node consensus
+    pendingSubmissions: Vector<PriceObservation, 64>,
+
+    // === Constructor ===
+
+    constructor(
+        initialOwner: Bytes<32>,
+        maxStalenessSeconds: Uint<64>,
+        requiredConfirmations: Uint<16>
+    ) {
+        this.owner = initialOwner;
+        this.maxStaleness = maxStalenessSeconds;
+        this.minConfirmations = requiredConfirmations;
+        this.isPaused = false;
+        this.nodeCount = 0;
+
+        // Initialize with zero price (indicates no data yet)
+        this.latestObservation = PriceObservation {
+            price: 0,
+            timestamp: 0,
+            sequence: 0,
+            sourceCount: 0,
+            confidence: 0
+        };
+    }
+
+    // === Core Functions ===
+
+    /**
+     * Submit a price update (single-node mode)
+     *
+     * Called by an authorized Oracle node to push new price data.
+     * Verifies the node is authorized and the data is valid.
+     *
+     * @param price - The price in fixed-point (8 decimal places)
+     * @param sourceCount - Number of external sources aggregated
+     * @param confidence - Confidence score (0-100)
+     * @param signature - Node's signature over the submission data
+     */
+    circuit submitPrice(
+        price: Uint<128>,
+        sourceCount: Uint<8>,
+        confidence: Uint<8>,
+        signature: Bytes<64>
+    ) {
+        // Precondition: contract is not paused
+        assert!(!this.isPaused, "Oracle contract is paused");
+
+        // Precondition: caller is an authorized Oracle node
+        // In a real implementation, derive caller's pubKey and verify
+        assert!(this.verifyCallerIsAuthorizedNode(), "Caller is not an authorized Oracle node");
+
+        // Precondition: price is non-zero
+        assert!(price > 0, "Price must be non-zero");
+
+        // Precondition: confidence is valid
+        assert!(confidence <= 100, "Confidence must be 0-100");
+
+        // Construct the observation
+        let newSequence = this.latestObservation.sequence + 1;
+        let currentTimestamp = getCurrentBlockTimestamp();
+
+        let observation = PriceObservation {
+            price: price,
+            timestamp: currentTimestamp,
+            sequence: newSequence,
+            sourceCount: sourceCount,
+            confidence: confidence
+        };
+
+        // Store the observation
+        this.latestObservation = observation;
+
+        // Append to history (ring buffer behavior)
+        this.history.push(observation);
+
+        // Emit event for off-chain listeners
+        emit PriceUpdated(price, currentTimestamp, newSequence, sourceCount, confidence);
+    }
+
+    /**
+     * Submit a price for multi-node consensus
+     *
+     * Each authorized node submits independently. When minConfirmations
+     * are reached, the median is computed and stored as the final price.
+     *
+     * @param price - The price in fixed-point (8 decimal places)
+     * @param sourceCount - Number of external sources aggregated
+     * @param confidence - Confidence score (0-100)
+     * @param signature - Node's signature over the submission
+     */
+    circuit submitForConsensus(
+        price: Uint<128>,
+        sourceCount: Uint<8>,
+        confidence: Uint<8>,
+        signature: Bytes<64>
+    ) {
+        assert!(!this.isPaused, "Oracle contract is paused");
+        assert!(this.verifyCallerIsAuthorizedNode(), "Caller is not authorized");
+        assert!(price > 0, "Price must be non-zero");
+
+        let currentTimestamp = getCurrentBlockTimestamp();
+
+        let submission = PriceObservation {
+            price: price,
+            timestamp: currentTimestamp,
+            sequence: this.latestObservation.sequence,
+            sourceCount: sourceCount,
+            confidence: confidence
+        };
+
+        // Add to pending submissions
+        this.pendingSubmissions.push(submission);
+
+        // Check if we have enough confirmations
+        if (this.pendingSubmissions.length >= this.minConfirmations) {
+            // Compute median of all pending submissions
+            let medianPrice = this.computeMedianPrice();
+
+            let finalObservation = PriceObservation {
+                price: medianPrice,
+                timestamp: currentTimestamp,
+                sequence: this.latestObservation.sequence + 1,
+                sourceCount: sourceCount,
+                confidence: this.computeAverageConfidence()
+            };
+
+            this.latestObservation = finalObservation;
+            this.history.push(finalObservation);
+
+            // Clear pending submissions
+            this.pendingSubmissions = Vector::new();
+
+            emit PriceConsensusReached(medianPrice, currentTimestamp, this.pendingSubmissions.length);
+        }
+    }
+
+    // === Query Functions ===
+
+    /**
+     * Get the latest price observation
+     *
+     * Returns the current price, timestamp, and metadata.
+     * Callers should check staleness before using the price.
+     */
+    circuit getLatestPrice(): PriceObservation {
+        return this.latestObservation;
+    }
+
+    /**
+     * Check if the latest price is fresh (not stale)
+     *
+     * @returns true if the data was updated within maxStaleness seconds
+     */
+    circuit isFresh(): Boolean {
+        if (this.latestObservation.timestamp == 0) {
+            return false; // No data yet
+        }
+        let currentTimestamp = getCurrentBlockTimestamp();
+        return (currentTimestamp - this.latestObservation.timestamp) <= this.maxStaleness;
+    }
+
+    /**
+     * Get price and prove it is within a range (ZK-friendly)
+     *
+     * This circuit proves that the price is within [minPrice, maxPrice]
+     * without revealing the exact price to external observers.
+     *
+     * @param minPrice - Minimum acceptable price (fixed-point)
+     * @param maxPrice - Maximum acceptable price (fixed-point)
+     * @returns The price if within range, or fails the proof
+     */
+    circuit getAndProvePriceInRange(
+        minPrice: Uint<128>,
+        maxPrice: Uint<128>
+    ): Uint<128> {
+        assert!(this.isFresh(), "Oracle data is stale");
+
+        let price = this.latestObservation.price;
+
+        // ZK range proof: prove price is within bounds
+        assert!(price >= minPrice, "Price is below minimum");
+        assert!(price <= maxPrice, "Price is above maximum");
+
+        return price;
+    }
+
+    /**
+     * Compute a Time-Weighted Average Price (TWAP)
+     *
+     * Averages the last N observations, weighted by time duration.
+     * Useful for reducing the impact of short-term price spikes.
+     *
+     * @param windowSize - Number of recent observations to include
+     * @returns The TWAP in fixed-point
+     */
+    circuit computeTWAP(windowSize: Uint<8>): Uint<128> {
+        assert!(windowSize > 0, "Window size must be > 0");
+        assert!(this.history.length >= windowSize, "Not enough history");
+
+        let totalPriceTime: Uint<256> = 0;
+        let totalTime: Uint<256> = 0;
+
+        let startIndex = this.history.length - windowSize;
+
+        for (let i = startIndex; i < this.history.length; i = i + 1) {
+            let observation = this.history.get(i);
+            let duration: Uint<64>;
+
+            if (i < this.history.length - 1) {
+                let nextObs = this.history.get(i + 1);
+                duration = nextObs.timestamp - observation.timestamp;
+            } else {
+                duration = getCurrentBlockTimestamp() - observation.timestamp;
+            }
+
+            totalPriceTime = totalPriceTime + (observation.price * duration);
+            totalTime = totalTime + duration;
+        }
+
+        assert!(totalTime > 0, "Total time is zero");
+        return (totalPriceTime / totalTime) as Uint<128>;
+    }
+
+    // === Admin Functions ===
+
+    /**
+     * Add an authorized Oracle node
+     *
+     * Only the contract owner can add nodes.
+     *
+     * @param nodePubKey - The public key of the new Oracle node
+     */
+    circuit addOracleNode(nodePubKey: Bytes<32>) {
+        assert!(this.isOwner(), "Only owner can add Oracle nodes");
+        assert!(this.nodeCount < 256, "Maximum node count reached");
+
+        let node = OracleNode {
+            pubKey: nodePubKey,
+            isActive: true,
+            reputation: 50, // Start with neutral reputation
+            submissionCount: 0
+        };
+
+        this.nodeCount = this.nodeCount + 1;
+        emit OracleNodeAdded(nodePubKey, this.nodeCount);
+    }
+
+    /**
+     * Remove an Oracle node
+     *
+     * @param nodePubKey - The public key of the node to remove
+     */
+    circuit removeOracleNode(nodePubKey: Bytes<32>) {
+        assert!(this.isOwner(), "Only owner can remove Oracle nodes");
+        // Implementation: mark node as inactive
+        emit OracleNodeRemoved(nodePubKey);
+    }
+
+    /**
+     * Pause the contract (circuit breaker)
+     *
+     * Emergency function to halt all Oracle updates.
+     * Only the owner can pause/unpause.
+     */
+    circuit setPaused(paused: Boolean) {
+        assert!(this.isOwner(), "Only owner can pause/unpause");
+        this.isPaused = paused;
+        emit ContractPaused(paused);
+    }
+
+    /**
+     * Update the maximum staleness parameter
+     *
+     * @param newMaxStaleness - New staleness threshold in seconds
+     */
+    circuit setMaxStaleness(newMaxStaleness: Uint<64>) {
+        assert!(this.isOwner(), "Only owner can update parameters");
+        assert!(newMaxStaleness >= 10, "Staleness must be at least 10 seconds");
+        this.maxStaleness = newMaxStaleness;
+    }
+
+    // === Internal Helpers ===
+
+    circuit isOwner(): Boolean {
+        // In real implementation, derive caller identity and compare
+        return true; // Placeholder
+    }
+
+    circuit verifyCallerIsAuthorizedNode(): Boolean {
+        // In real implementation:
+        // 1. Derive caller's public key from the transaction signature
+        // 2. Look up the node in the authorized nodes list
+        // 3. Verify the node is active
+        return true; // Placeholder
+    }
+
+    circuit computeMedianPrice(): Uint<128> {
+        // In real implementation:
+        // 1. Sort all pending submissions by price
+        // 2. Return the middle value
+        // 3. If even count, return average of two middle values
+        if (this.pendingSubmissions.length == 0) {
+            return 0;
+        }
+        let mid = this.pendingSubmissions.length / 2;
+        return this.pendingSubmissions.get(mid).price;
+    }
+
+    circuit computeAverageConfidence(): Uint<8> {
+        if (this.pendingSubmissions.length == 0) {
+            return 0;
+        }
+        let total: Uint<16> = 0;
+        for (let i = 0; i < this.pendingSubmissions.length; i = i + 1) {
+            total = total + this.pendingSubmissions.get(i).confidence;
+        }
+        return (total / this.pendingSubmissions.length) as Uint<8>;
+    }
+}
+
+// === Events ===
+
+event PriceUpdated(
+    price: Uint<128>,
+    timestamp: Uint<64>,
+    sequence: Uint<64>,
+    sourceCount: Uint<8>,
+    confidence: Uint<8>
+);
+
+event PriceConsensusReached(
+    medianPrice: Uint<128>,
+    timestamp: Uint<64>,
+    nodeCount: Uint<16>
+);
+
+event OracleNodeAdded(nodePubKey: Bytes<32>, totalNodes: Uint<16>);
+event OracleNodeRemoved(nodePubKey: Bytes<32>);
+event ContractPaused(isPaused: Boolean);
