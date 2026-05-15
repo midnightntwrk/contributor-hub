@@ -1,0 +1,105 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+// ============================================================
+// Block Limit Demo Contract
+// Demonstrates patterns that trigger Error 154 (BlockLimitExceeded)
+// and safe alternatives that stay within block resource limits.
+// ============================================================
+
+const DOMAIN: Bytes<32> = pad(32, "blockLimitDemo:v1");
+
+// Ledger state — demonstrates persistent storage costs
+export ledger slot1: Uint<64>;
+export ledger slot2: Uint<64>;
+export ledger slot3: Uint<64>;
+export ledger slot4: Uint<64>;
+export ledger slot5: Uint<64>;
+export ledger slot6: Uint<64>;
+export ledger slot7: Uint<64>;
+export ledger slot8: Uint<64>;
+export ledger slot9: Uint<64>;
+export ledger slot10: Uint<64>;
+export ledger slot11: Uint<64>;
+export ledger slot12: Uint<64>;
+export ledger slot13: Uint<64>;
+export ledger slot14: Uint<64>;
+export ledger slot15: Uint<64>;
+export ledger slot16: Uint<64>;
+export ledger slot17: Uint<64>;
+export ledger slot18: Uint<64>;
+export ledger slot19: Uint<64>;
+export ledger slot20: Uint<64>;
+
+export ledger updateCount: Uint<64>;
+
+// ❌ ANTI-PATTERN: Writing 20 state variables in one transaction
+// This will hit Persistent Storage (~2KB) and potentially Churn limits.
+// On a busy network, this transaction will be rejected with Error 154.
+//
+// DO NOT USE IN PRODUCTION — shown here for educational purposes.
+//
+// export circuit batchUpdate20(
+//     v1: Uint<64>, v2: Uint<64>, v3: Uint<64>, v4: Uint<64>, v5: Uint<64>,
+//     v6: Uint<64>, v7: Uint<64>, v8: Uint<64>, v9: Uint<64>, v10: Uint<64>,
+//     v11: Uint<64>, v12: Uint<64>, v13: Uint<64>, v14: Uint<64>, v15: Uint<64>,
+//     v16: Uint<64>, v17: Uint<64>, v18: Uint<64>, v19: Uint<64>, v20: Uint<64>
+// ): [] {
+//     slot1 = disclose(v1); slot2 = disclose(v2); slot3 = disclose(v3);
+//     slot4 = disclose(v4); slot5 = disclose(v5); slot6 = disclose(v6);
+//     slot7 = disclose(v7); slot8 = disclose(v8); slot9 = disclose(v9);
+//     slot10 = disclose(v10); slot11 = disclose(v11); slot12 = disclose(v12);
+//     slot13 = disclose(v13); slot14 = disclose(v14); slot15 = disclose(v15);
+//     slot16 = disclose(v16); slot17 = disclose(v17); slot18 = disclose(v18);
+//     slot19 = disclose(v19); slot20 = disclose(v20);
+//     updateCount = updateCount + (1 as Uint<64>);
+// }
+
+// ✅ SAFE PATTERN: Chunked updates — 5 slots per transaction
+// Each call writes only 5 state variables, staying well within limits.
+// Process all 20 slots by calling this circuit 4 times.
+
+export circuit updateChunk1(
+    v1: Uint<64>, v2: Uint<64>, v3: Uint<64>, v4: Uint<64>, v5: Uint<64>
+): [] {
+    slot1 = disclose(v1);
+    slot2 = disclose(v2);
+    slot3 = disclose(v3);
+    slot4 = disclose(v4);
+    slot5 = disclose(v5);
+    updateCount = updateCount + (1 as Uint<64>);
+}
+
+export circuit updateChunk2(
+    v6: Uint<64>, v7: Uint<64>, v8: Uint<64>, v9: Uint<64>, v10: Uint<64>
+): [] {
+    slot6 = disclose(v6);
+    slot7 = disclose(v7);
+    slot8 = disclose(v8);
+    slot9 = disclose(v9);
+    slot10 = disclose(v10);
+    updateCount = updateCount + (1 as Uint<64>);
+}
+
+export circuit updateChunk3(
+    v11: Uint<64>, v12: Uint<64>, v13: Uint<64>, v14: Uint<64>, v15: Uint<64>
+): [] {
+    slot11 = disclose(v11);
+    slot12 = disclose(v12);
+    slot13 = disclose(v13);
+    slot14 = disclose(v14);
+    slot15 = disclose(v15);
+    updateCount = updateCount + (1 as Uint<64>);
+}
+
+export circuit updateChunk4(
+    v16: Uint<64>, v17: Uint<64>, v18: Uint<64>, v19: Uint<64>, v20: Uint<64>
+): [] {
+    slot16 = disclose(v16);
+    slot17 = disclose(v17);
+    slot18 = disclose(v18);
+    slot19 = disclose(v19);
+    slot20 = disclose(v20);
+    updateCount = updateCount + (1 as Uint<64>);
+}

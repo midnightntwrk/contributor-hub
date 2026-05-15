@@ -1,0 +1,118 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+// ============================================================
+// Safe Batch Processing Contract
+// Demonstrates chunked batch patterns that avoid Error 1010.
+// Processes recipients in fixed-size chunks (3 per transaction)
+// to stay within block resource limits.
+// ============================================================
+
+const TOKEN_DOMAIN: Bytes<32> = pad(32, "safeBatch:v1");
+
+// Track batch progress across multiple transactions
+export ledger batchId: Counter;
+export ledger processedInBatch: Uint<64>;
+export ledger totalBatches: Uint<64>;
+export ledger totalRecipientsProcessed: Uint<64>;
+
+// Initialize a new batch — call this before starting chunked processing
+export circuit startBatch(): Uint<64> {
+    batchId.increment();
+    processedInBatch = (0 as Uint<64>);
+    return batchId.value() as Uint<64>;
+}
+
+// Process a chunk of up to 3 recipients per transaction
+// This stays well within block limits for all 5 resource dimensions.
+//
+// Usage pattern:
+//   1. Call startBatch() to get a batch ID
+//   2. Call processChunk() repeatedly with 3 recipients each
+//   3. Call finalizeBatch() when all chunks are processed
+export circuit processChunk(
+    recipient1: UserAddress, amount1: Uint<64>,
+    recipient2: UserAddress, amount2: Uint<64>,
+    recipient3: UserAddress, amount3: Uint<64>,
+    chunkSize: Uint<8>
+): [] {
+    const color = tokenType(disclose(TOKEN_DOMAIN), kernel.self());
+
+    // Recipient 1 — always required
+    sendUnshielded(color, disclose(amount1) as Uint<128>,
+        right<ContractAddress, UserAddress>(disclose(recipient1)));
+    processedInBatch = processedInBatch + (1 as Uint<64>);
+    totalRecipientsProcessed = totalRecipientsProcessed + (1 as Uint<64>);
+
+    // Recipient 2 — optional
+    if (disclose(chunkSize) >= (2 as Uint<8>)) {
+        sendUnshielded(color, disclose(amount2) as Uint<128>,
+            right<ContractAddress, UserAddress>(disclose(recipient2)));
+        processedInBatch = processedInBatch + (1 as Uint<64>);
+        totalRecipientsProcessed = totalRecipientsProcessed + (1 as Uint<64>);
+    }
+
+    // Recipient 3 — optional
+    if (disclose(chunkSize) >= (3 as Uint<8>)) {
+        sendUnshielded(color, disclose(amount3) as Uint<128>,
+            right<ContractAddress, UserAddress>(disclose(recipient3)));
+        processedInBatch = processedInBatch + (1 as Uint<64>);
+        totalRecipientsProcessed = totalRecipientsProcessed + (1 as Uint<64>);
+    }
+
+    totalBatches = totalBatches + (1 as Uint<64>);
+}
+
+// Finalize the current batch — call after all chunks are processed
+export circuit finalizeBatch(): Uint<64> {
+    const count = processedInBatch;
+    processedInBatch = (0 as Uint<64>);
+    return count;
+}
+
+// ============================================================
+// Safe Token Distribution Contract
+// Demonstrates atomic multi-recipient distribution within limits.
+// Each call sends to exactly 3 recipients — safe for block limits.
+// ============================================================
+
+export ledger distributionCount: Uint<64>;
+export ledger totalDistributed: Uint<128>;
+
+export circuit distributeTo3(
+    amount1: Uint<64>, recipient1: UserAddress,
+    amount2: Uint<64>, recipient2: UserAddress,
+    amount3: Uint<64>, recipient3: UserAddress
+): [] {
+    const color = tokenType(disclose(TOKEN_DOMAIN), kernel.self());
+
+    const a1 = disclose(amount1) as Uint<128>;
+    const a2 = disclose(amount2) as Uint<128>;
+    const a3 = disclose(amount3) as Uint<128>;
+
+    sendUnshielded(color, a1, right<ContractAddress, UserAddress>(disclose(recipient1)));
+    sendUnshielded(color, a2, right<ContractAddress, UserAddress>(disclose(recipient2)));
+    sendUnshielded(color, a3, right<ContractAddress, UserAddress>(disclose(recipient3)));
+
+    totalDistributed = totalDistributed + a1 + a2 + a3;
+    distributionCount = distributionCount + (1 as Uint<64>);
+}
+
+// Equal distribution — same amount to 3 recipients
+export circuit distributeEqual3(
+    amountPerRecipient: Uint<64>,
+    recipient1: UserAddress,
+    recipient2: UserAddress,
+    recipient3: UserAddress
+): [] {
+    const color = tokenType(disclose(TOKEN_DOMAIN), kernel.self());
+    const amount = disclose(amountPerRecipient) as Uint<128>;
+
+    sendUnshielded(color, amount, right<ContractAddress, UserAddress>(disclose(recipient1)));
+    sendUnshielded(color, amount, right<ContractAddress, UserAddress>(disclose(recipient2)));
+    sendUnshielded(color, amount, right<ContractAddress, UserAddress>(disclose(recipient3)));
+
+    totalDistributed = totalDistributed + (amount * (3 as Uint<128>));
+    distributionCount = distributionCount + (1 as Uint<64>);
+}

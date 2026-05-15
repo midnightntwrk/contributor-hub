@@ -1,0 +1,96 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+// ============================================================
+// Effects Debug Contract
+// Demonstrates patterns that avoid Error 186 (EffectsCheckFailure).
+// Shows safe vs. unsafe patterns for nullifier usage and state writes.
+// ============================================================
+
+const TOKEN_A_DOMAIN: Bytes<32> = pad(32, "effectsDebug:tokenA");
+const TOKEN_B_DOMAIN: Bytes<32> = pad(32, "effectsDebug:tokenB");
+
+export ledger balanceA: Uint<128>;
+export ledger balanceB: Uint<128>;
+export ledger operationCount: Uint<64>;
+
+// ✅ SAFE: Two independent sends with different token types
+// No nullifier overlap — each send uses its own token color.
+export circuit independentSends(
+    amountA: Uint<64>, recipientA: UserAddress,
+    amountB: Uint<64>, recipientB: UserAddress
+): [] {
+    const colorA = tokenType(disclose(TOKEN_A_DOMAIN), kernel.self());
+    const colorB = tokenType(disclose(TOKEN_B_DOMAIN), kernel.self());
+
+    sendUnshielded(colorA, disclose(amountA) as Uint<128>,
+        right<ContractAddress, UserAddress>(disclose(recipientA)));
+    sendUnshielded(colorB, disclose(amountB) as Uint<128>,
+        right<ContractAddress, UserAddress>(disclose(recipientB)));
+
+    balanceA = balanceA - (disclose(amountA) as Uint<128>);
+    balanceB = balanceB - (disclose(amountB) as Uint<128>);
+    operationCount = operationCount + (1 as Uint<64>);
+}
+
+// ✅ SAFE: Deposit then send — no nullifier conflict
+// The deposit creates a new commitment; the send consumes a different one.
+export circuit depositAndSend(
+    depositAmount: Uint<64>,
+    sendAmount: Uint<64>,
+    recipient: UserAddress
+): [] {
+    const color = tokenType(disclose(TOKEN_A_DOMAIN), kernel.self());
+
+    // Deposit (creates new commitment)
+    receiveUnshielded(color, disclose(depositAmount));
+    balanceA = balanceA + (disclose(depositAmount) as Uint<128>);
+
+    // Send (consumes a different nullifier)
+    sendUnshielded(color, disclose(sendAmount) as Uint<128>,
+        right<ContractAddress, UserAddress>(disclose(recipient)));
+    balanceA = balanceA - (disclose(sendAmount) as Uint<128>);
+}
+
+// ✅ SAFE: Multiple sends from same token type
+// Each send uses a unique nullifier from the sender's UTXO set.
+// As long as the sender has enough distinct UTXOs, no conflict occurs.
+export circuit multiSendSameToken(
+    amount1: Uint<64>, recipient1: UserAddress,
+    amount2: Uint<64>, recipient2: UserAddress,
+    amount3: Uint<64>, recipient3: UserAddress
+): [] {
+    const color = tokenType(disclose(TOKEN_A_DOMAIN), kernel.self());
+
+    const a1 = disclose(amount1) as Uint<128>;
+    const a2 = disclose(amount2) as Uint<128>;
+    const a3 = disclose(amount3) as Uint<128>;
+
+    sendUnshielded(color, a1, right<ContractAddress, UserAddress>(disclose(recipient1)));
+    sendUnshielded(color, a2, right<ContractAddress, UserAddress>(disclose(recipient2)));
+    sendUnshielded(color, a3, right<ContractAddress, UserAddress>(disclose(recipient3)));
+
+    balanceA = balanceA - a1 - a2 - a3;
+    operationCount = operationCount + (1 as Uint<64>);
+}
+
+// ✅ SAFE: Transfer with balance tracking — no overlapping effects
+export circuit safeTransfer(
+    from: UserAddress,
+    to: UserAddress,
+    amount: Uint<64>
+): [] {
+    const color = tokenType(disclose(TOKEN_A_DOMAIN), kernel.self());
+    const transferAmount = disclose(amount) as Uint<128>;
+
+    // Receive from sender
+    receiveUnshielded(color, disclose(amount));
+
+    // Send to recipient
+    sendUnshielded(color, transferAmount,
+        right<ContractAddress, UserAddress>(disclose(to)));
+
+    // Balance is net-zero — no state inconsistency
+    operationCount = operationCount + (1 as Uint<64>);
+}
