@@ -1,0 +1,97 @@
+// ============================================================================
+// SwapContract.compact — Split from MonolithicDEX (5 circuits)
+// ============================================================================
+// Part 1 of 3: Handles swap logic only.
+// Deploy alongside LiquidityContract and GovContract.
+// ============================================================================
+
+// Import the liquidity contract for cross-contract state reads
+import LiquidityContract;
+
+contract SwapContract {
+  ledger {
+    // Only swap-relevant state
+    pools: Map<Bytes<32>, PoolData>;
+    swap_fee: Uint<64>;          // basis points (e.g., 30 = 0.3%)
+    fee_accumulator: Uint<64>;   // accumulated protocol fees
+  }
+
+  circuit swap(
+    user: Bytes<32>,
+    token_in: Bytes<32>,
+    token_out: Bytes<32>,
+    amount_in: Uint<64>,
+    min_amount_out: Uint<64>
+  ): Uint<64> {
+    // Cross-contract check: verify liquidity is available
+    let available = LiquidityContract.get_available_liquidity(token_in, token_out);
+    assert available > 0, "No liquidity available";
+
+    // Calculate output amount using constant-product formula
+    let amount_out = calculate_price(token_in, token_out, amount_in);
+    assert amount_out >= min_amount_out, "Slippage tolerance exceeded";
+
+    // Deduct fee
+    let fee = (amount_in * ledger.swap_fee) / 10000;
+    let net_in = amount_in - fee;
+    ledger.fee_accumulator = ledger.fee_accumulator + fee;
+
+    // Update pool reserves
+    update_pool_reserves(token_in, token_out, net_in, amount_out);
+
+    // Emit event via nullifier
+    nullifier(user, amount_in + amount_out);
+
+    return amount_out;
+  }
+
+  circuit calculate_price(
+    token_in: Bytes<32>,
+    token_out: Bytes<32>,
+    amount: Uint<64>
+  ): Uint<64> {
+    let pool_key = token_in ++ token_out;
+    let pool = ledger.pools[pool_key];
+    // x * y = k formula
+    let numerator = amount * pool.reserve_b;
+    let denominator = pool.reserve_a + amount;
+    return numerator / denominator;
+  }
+
+  circuit verify_slippage(
+    expected: Uint<64>,
+    actual: Uint<64>,
+    tolerance_bps: Uint<64>
+  ): void {
+    let min_acceptable = (expected * (10000 - tolerance_bps)) / 10000;
+    assert actual >= min_acceptable, "Slippage too high";
+  }
+
+  circuit update_pool_reserves(
+    token_in: Bytes<32>,
+    token_out: Bytes<32>,
+    amount_in: Uint<64>,
+    amount_out: Uint<64>
+  ): void {
+    let pool_key = token_in ++ token_out;
+    let pool = ledger.pools[pool_key];
+    pool.reserve_a = pool.reserve_a + amount_in;
+    pool.reserve_b = pool.reserve_b - amount_out;
+    ledger.pools[pool_key] = pool;
+  }
+
+  circuit initialize_pool(
+    token_a: Bytes<32>,
+    token_b: Bytes<32>,
+    reserve_a: Uint<64>,
+    reserve_b: Uint<64>
+  ): void {
+    let pool_key = token_a ++ token_b;
+    assert !ledger.pools[pool_key].exists, "Pool already exists";
+    ledger.pools[pool_key] = {
+      reserve_a: reserve_a,
+      reserve_b: reserve_b,
+      fees_earned: 0
+    };
+  }
+}
