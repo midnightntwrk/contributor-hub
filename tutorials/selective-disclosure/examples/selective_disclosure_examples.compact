@@ -1,0 +1,112 @@
+// License: Apache-2.0
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+//
+// selectivex_disclosure_examples.compact
+// Companion examples for the Selective Disclosure Patterns tutorial
+//
+// NOTE: These are illustrative patterns for the tutorial.
+// They demonstrate Compact syntax and selective disclosure concepts.
+// Some imports (hash_helpers, merkle_helpers) are conceptual.
+
+// ============================================================
+// Example 1: Threshold Disclosure
+// ============================================================
+// Prove a secret value meets a threshold without revealing it.
+
+contract ThresholdExample {
+  // Private ledger value: the user's secret balance
+  ledger secret_balance: Opaque<Uint<64>>;
+
+  // Returns true if balance meets the threshold.
+  // No data is disclosed -- only the ZK proof attests validity.
+  circuit meets_threshold(threshold: Uint<64>): Boolean {
+    return secret_balance >= threshold;
+  }
+
+  // Discloses a coarse bucket (0=low, 1=medium, 2=high)
+  // instead of the exact balance.
+  circuit balance_bucket(): Opaque<Uint<8>> {
+    const bal = secret_balance;
+    if (bal < 100) {
+      return disclose(0 as Uint<8>);
+    } else if (bal < 10000) {
+      return disclose(1 as Uint<8>);
+    } else {
+      return disclose(2 as Uint<8>);
+    }
+  }
+}
+
+// ============================================================
+// Example 2: Set Membership (Merkle-based)
+// ============================================================
+// Prove membership in a set without revealing which member.
+
+contract MembershipExample {
+  ledger merkle_root: Field;
+
+  circuit prove_membership(
+    leaf: Field,
+    path: MerklePath,
+    indices: Opaque[32]<Boolean>
+  ): Boolean {
+    const root = MerkleTree.verify(leaf, path, indices);
+    return root == merkle_root;
+  }
+
+  // Disclose only the leaf hash (for dedup), not the preimage
+  circuit disclose_leaf_hash(
+    leaf: Field,
+    path: MerklePath,
+    indices: Opaque[32]<Boolean>
+  ): Field {
+    const root = MerkleTree.verify(leaf, path, indices);
+    assert(root == merkle_root);
+    return disclose(leaf);
+  }
+}
+
+// ============================================================
+// Example 3: Domain-Separated Disclosure
+// ============================================================
+// Each disclosure uses a unique domain tag so that
+// H("age" || x) and H("income" || x) produce unrelated outputs.
+
+contract DomainSeparatedExample {
+  ledger secret_data_hash: Field;
+
+  circuit disclose_age_bracket(): Opaque<Field> {
+    const age = compute_age(secret_data_hash);
+    const bracket = age / 10;
+    return disclose(Hash.poseidon_with_domain("age_bracket", bracket));
+  }
+
+  circuit disclose_income_bracket(): Opaque<Field> {
+    const income = compute_income(secret_data_hash);
+    const bracket = income / 50000;
+    return disclose(Hash.poseidon_with_domain("income_bracket", bracket));
+  }
+}
+
+// ============================================================
+// Example 4: Conditional Disclosure
+// ============================================================
+// Disclose a value only when a condition on another private
+// value is satisfied.
+
+contract ConditionalExample {
+  ledger secret_score: Opaque<Uint<32>>;
+  ledger secret_tier: Opaque<Uint<8>>;
+
+  // Disclose score only for top-tier users
+  circuit disclose_if_eligible(): Opaque<Uint<32>> {
+    assert(secret_tier == 3, "Only top-tier users can disclose scores");
+    return disclose(secret_score);
+  }
+
+  // Expose eligibility as a boolean without revealing the tier
+  circuit is_eligible(): Boolean {
+    return secret_tier >= 2;
+  }
+}
