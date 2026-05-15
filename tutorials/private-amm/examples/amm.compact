@@ -1,0 +1,192 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+
+pragma language_version 0.16;
+
+import CompactStandardLibrary;
+
+// ============================================================
+// Private AMM Contract for Midnight Network
+// Implements constant product (x*y=k) with shielded swaps
+// ============================================================
+
+contract PrivateAMM {
+
+  // ---- Storage ----
+
+  // Pool reserves (transparent for price discovery)
+  reserve_a: Opaque<Uint<128>>;
+  reserve_b: Opaque<Uint<128>>;
+
+  // Total LP token supply
+  total_lp_supply: Opaque<Uint<128>>;
+
+  // LP token balances (shielded - private per user via Merkle tree)
+  lp_balances: MerkleTree<20, Opaque<Uint<128>>>;
+
+  // Fee in basis points (30 = 0.3%)
+  fee_bps: Opaque<Uint<128>>;
+
+  // Pool initialization flag
+  pool_initialized: Opaque<Boolean>;
+
+  // ---- Circuit: Initialize Pool ----
+
+  circuit initialize(
+    amount_a: Opaque<Uint<128>>,
+    amount_b: Opaque<Uint<128>>
+  ): Opaque<Uint<128>> {
+    assert(!pool_initialized, "Pool already initialized");
+    assert(amount_a > 0 && amount_b > 0, "Amounts must be positive");
+
+    // Set initial reserves
+    reserve_a = amount_a;
+    reserve_b = amount_b;
+
+    // Initial LP tokens = sqrt(amount_a * amount_b)
+    let initial_lp = isqrt(amount_a * amount_b);
+    total_lp_supply = initial_lp;
+    fee_bps = Opaque<Uint<128>>(30);
+    pool_initialized = Opaque<Boolean>(true);
+
+    // Return initial LP tokens to caller
+    return initial_lp;
+  }
+
+  // ---- Circuit: Swap (Shielded) ----
+
+  circuit swap(
+    amount_in: Shielded<Uint<128>>,
+    token_in_is_a: Opaque<Boolean>,
+    user_secret: Shielded<Uint<256>>
+  ): Shielded<Uint<128>> {
+    assert(pool_initialized, "Pool not initialized");
+
+    // Convert shielded input to transparent for calculation
+    // The shielded value is committed but only revealed to the circuit
+    let amount_in_clear = reveal_to_circuit(amount_in);
+
+    // Apply fee (0.3%)
+    let amount_in_after_fee = amount_in_clear * (10000 - fee_bps) / 10000;
+
+    // Calculate output using constant product formula
+    let amount_out: Uint<128>;
+    if (token_in_is_a) {
+      // Swap A -> B: dy = y - k/(x + dx)
+      let k = reserve_a * reserve_b;
+      let new_reserve_a = reserve_a + amount_in_after_fee;
+      let new_reserve_b = k / new_reserve_a;
+      amount_out = reserve_b - new_reserve_b;
+
+      // Update reserves
+      reserve_a = reserve_a + amount_in_clear;
+      reserve_b = reserve_b - amount_out;
+    } else {
+      // Swap B -> A: dx = x - k/(y + dy)
+      let k = reserve_a * reserve_b;
+      let new_reserve_b = reserve_b + amount_in_after_fee;
+      let new_reserve_a = k / new_reserve_b;
+      amount_out = reserve_a - new_reserve_a;
+
+      // Update reserves
+      reserve_b = reserve_b + amount_in_clear;
+      reserve_a = reserve_a - amount_out;
+    }
+
+    assert(amount_out > 0, "Insufficient output amount");
+
+    // Return shielded output (only the user can decrypt)
+    return shield(amount_out, user_secret);
+  }
+
+  // ---- Circuit: Add Liquidity (Private) ----
+
+  circuit add_liquidity(
+    amount_a: Shielded<Uint<128>>,
+    amount_b: Shielded<Uint<128>>,
+    user_index: Opaque<Uint<32>>,
+    user_secret: Shielded<Uint<256>>
+  ): Shielded<Uint<128>> {
+    assert(pool_initialized, "Pool not initialized");
+
+    let amount_a_clear = reveal_to_circuit(amount_a);
+    let amount_b_clear = reveal_to_circuit(amount_b);
+
+    assert(amount_a_clear > 0 && amount_b_clear > 0, "Amounts must be positive");
+
+    // Calculate LP tokens to mint proportionally
+    let lp_tokens = total_lp_supply * amount_a_clear / reserve_a;
+
+    // Update reserves
+    reserve_a = reserve_a + amount_a_clear;
+    reserve_b = reserve_b + amount_b_clear;
+
+    // Update user's LP balance (private, in Merkle tree)
+    let current_balance = lp_balances[user_index];
+    lp_balances[user_index] = current_balance + lp_tokens;
+
+    // Update total supply
+    total_lp_supply = total_lp_supply + lp_tokens;
+
+    return shield(lp_tokens, user_secret);
+  }
+
+  // ---- Circuit: Remove Liquidity (Private) ----
+
+  circuit remove_liquidity(
+    lp_amount: Shielded<Uint<128>>,
+    user_index: Opaque<Uint<32>>,
+    user_secret: Shielded<Uint<256>>
+  ): [Shielded<Uint<128>>, Shielded<Uint<128>>] {
+    assert(pool_initialized, "Pool not initialized");
+
+    let lp_amount_clear = reveal_to_circuit(lp_amount);
+
+    // Verify user has enough LP tokens
+    let current_balance = lp_balances[user_index];
+    assert(current_balance >= lp_amount_clear, "Insufficient LP balance");
+
+    // Calculate proportional share of reserves
+    let amount_a = reserve_a * lp_amount_clear / total_lp_supply;
+    let amount_b = reserve_b * lp_amount_clear / total_lp_supply;
+
+    // Update reserves
+    reserve_a = reserve_a - amount_a;
+    reserve_b = reserve_b - amount_b;
+
+    // Update user's LP balance (private)
+    lp_balances[user_index] = current_balance - lp_amount_clear;
+
+    // Update total supply
+    total_lp_supply = total_lp_supply - lp_amount_clear;
+
+    return [shield(amount_a, user_secret), shield(amount_b, user_secret)];
+  }
+
+  // ---- Circuit: Get Price (Read-only, transparent) ----
+
+  circuit get_price(): [Opaque<Uint<128>>, Opaque<Uint<128>>] {
+    return [reserve_a, reserve_b];
+  }
+
+  // ---- Circuit: Get Pool Info (Read-only, transparent) ----
+
+  circuit get_pool_info(): [Opaque<Uint<128>>, Opaque<Uint<128>>, Opaque<Uint<128>>] {
+    return [reserve_a, reserve_b, total_lp_supply];
+  }
+
+  // ---- Helper: Integer Square Root ----
+
+  circuit isqrt(n: Uint<128>): Uint<128> {
+    if (n == 0) return 0;
+    let x = n;
+    let y = (x + 1) / 2;
+    while (y < x) {
+      x = y;
+      y = (x + n / x) / 2;
+    }
+    return x;
+  }
+}
