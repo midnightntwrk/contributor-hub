@@ -1,0 +1,122 @@
+// TokenGate.compact - Midnight Network Token Gate Smart Contract
+// This contract verifies asset ownership for access control
+
+// Token types supported by the gate
+enum TokenType {
+  Fungible,
+  NonFungible,
+  Soulbound
+}
+
+// A single requirement within a gate
+struct TokenRequirement {
+  tokenType: TokenType;
+  contractAddress: Bytes<32>;
+  minimumBalance: Uint<128>;
+  tokenIds: Vector<Uint<128>>;
+}
+
+// Complete gate configuration
+struct GateConfig {
+  owner: Bytes<32>;
+  requirements: Vector<TokenRequirement>;
+  active: Boolean;
+  createdAt: Uint<64>;
+  expiresAt: Uint<64>;
+}
+
+// Ownership proof submitted by users
+struct OwnershipProof {
+  gateId: Bytes<32>;
+  holder: Bytes<32>;
+  tokenBalances: Vector<Uint<128>>;
+  signature: Bytes<64>;
+  timestamp: Uint<64>;
+}
+
+// Public contract state
+ledger gates: Map<Bytes<32>, GateConfig>;
+ledger verified: Map<Bytes<32>, Map<Bytes<32>, Boolean>>;
+ledger verificationCount: Map<Bytes<32>, Uint<64>>;
+
+// Create a new token gate
+export circuit createGate(
+  gateId: Bytes<32>,
+  requirements: Vector<TokenRequirement>,
+  expiresAt: Uint<64>
+): Boolean {
+  assert(!gates.has(gateId), "Gate ID already exists");
+
+  const config: GateConfig = {
+    owner: caller(),
+    requirements: requirements,
+    active: true,
+    createdAt: currentTimestamp(),
+    expiresAt: expiresAt
+  };
+
+  gates[gateId] = config;
+  verificationCount[gateId] = 0;
+
+  return true;
+}
+
+// Verify ownership against a gate
+export circuit verifyOwnership(
+  gateId: Bytes<32>,
+  proof: OwnershipProof
+): Boolean {
+  const gate = gates[gateId];
+  assert(gate.active, "Gate is not active");
+  assert(gate.expiresAt == 0 || currentTimestamp() < gate.expiresAt, "Gate expired");
+
+  // Verify proof signature
+  assert(
+    crypto.verifySignature(proof.holder, proof.signature, concat(proof.gateId, proof.timestamp)),
+    "Invalid proof signature"
+  );
+
+  // Check each requirement
+  const reqs = gate.requirements;
+  assert(proof.tokenBalances.length == reqs.length, "Balance count mismatch");
+
+  for (let i = 0; i < reqs.length; i++) {
+    assert(proof.tokenBalances[i] >= reqs[i].minimumBalance, "Insufficient balance");
+  }
+
+  // Record verification
+  verified[gateId][proof.holder] = true;
+  verificationCount[gateId] = verificationCount[gateId] + 1;
+
+  return true;
+}
+
+// Check if an address has passed a gate
+export circuit getGateStatus(gateId: Bytes<32>, address: Bytes<32>): Boolean {
+  return verified[gateId][address] ?? false;
+}
+
+// Update gate requirements (owner only)
+export circuit updateGate(
+  gateId: Bytes<32>,
+  newRequirements: Vector<TokenRequirement>
+): Boolean {
+  const gate = gates[gateId];
+  assert(gate.owner == caller(), "Only gate owner can update");
+
+  gate.requirements = newRequirements;
+  gates[gateId] = gate;
+
+  return true;
+}
+
+// Deactivate a gate (owner only)
+export circuit deactivateGate(gateId: Bytes<32>): Boolean {
+  const gate = gates[gateId];
+  assert(gate.owner == caller(), "Only gate owner can deactivate");
+
+  gate.active = false;
+  gates[gateId] = gate;
+
+  return true;
+}
