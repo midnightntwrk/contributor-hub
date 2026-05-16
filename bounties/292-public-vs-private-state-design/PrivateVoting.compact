@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: Apache-2.0
+// Designing Public vs. Private State: Private Voting Pattern
+// Bounty #292 - Midnight Contributor Hub
+
+pragma language_version >= 0.16.0;
+
+import CompactStandardLibrary;
+
+/// @title PrivateVoting - Demonstrates private votes with public tally
+/// @notice Individual votes are private (witnesses), only the aggregate is public (ledger)
+contract PrivateVoting {
+
+    // ============================================================
+    // PUBLIC STATE - Visible on-chain, verifiable by anyone
+    // ============================================================
+
+    /// @notice Vote count in favor
+    export ledger votesFor: Uint<64>;
+
+    /// @notice Vote count against
+    export ledger votesAgainst: Uint<64>;
+
+    /// @notice Whether voting is currently open
+    export ledger votingOpen: Boolean;
+
+    /// @notice Registry of voter commitments (not identities)
+    /// @dev Commitments are removed after voting to prevent double-voting
+    export sealed ledger voterCommitments: MerkleTree<32, Bytes<32>>;
+
+    // ============================================================
+    // CONSTRUCTOR
+    // ============================================================
+
+    constructor() {
+        votesFor = 0;
+        votesAgainst = 0;
+        votingOpen = true;
+        voterCommitments = emptyMerkleTree();
+    }
+
+    // ============================================================
+    // CIRCUITS
+    // ============================================================
+
+    /// @notice Register a voter by storing their commitment
+    /// @dev Only the contract itself (or authorized registrar) should call this
+    /// @param voterCommitment The hash commitment of the voter's secret
+    export circuit registerVoter(voterCommitment: Bytes<32>): [] {
+        assert(votingOpen, "Registration closed");
+        voterCommitments = insert(voterCommitments, voterCommitment);
+        return [];
+    }
+
+    /// @notice Cast a vote privately
+    /// @dev The voter proves they know the secret behind a registered commitment
+    ///      without revealing which commitment or who they are
+    /// @param voterSecret PRIVATE: The voter's secret key (never stored on-chain)
+    /// @param voteChoice PRIVATE: true = for, false = against (never stored on-chain)
+    /// @param voterCommitment The commitment derived from voterSecret
+    export circuit castVote(
+        voterSecret: Bytes<32>,
+        voteChoice: Boolean,
+        voterCommitment: Bytes<32>
+    ): [] {
+        assert(votingOpen, "Voting is closed");
+
+        // Verify the commitment exists in the registered voter tree
+        assert(
+            contains(voterCommitments, voterCommitment),
+            "Not a registered voter"
+        );
+
+        // Tally the vote — only the aggregate is public
+        if (voteChoice) {
+            votesFor = votesFor + 1;
+        } else {
+            votesAgainst = votesAgainst + 1;
+        }
+
+        // Remove the commitment to prevent double-voting
+        voterCommitments = remove(voterCommitments, voterCommitment);
+
+        return [];
+    }
+
+    /// @notice Close the voting period
+    export circuit closeVoting(): [] {
+        votingOpen = false;
+        return [];
+    }
+}
