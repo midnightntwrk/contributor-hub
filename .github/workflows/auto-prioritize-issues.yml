@@ -1,0 +1,85 @@
+name: Auto-Prioritize Issues
+
+on:
+  schedule:
+    # Run daily at midnight UTC
+    - cron: '0 0 * * *'
+  issues:
+    types: [opened, edited, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  prioritize:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Prioritize Issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            
+            // Fetch all open issues
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100
+            });
+            
+            // Filter out pull requests
+            const actualIssues = issues.filter(issue => !issue.pull_request);
+            
+            console.log(`Processing ${actualIssues.length} issues...`);
+            
+            for (const issue of actualIssues) {
+              // Calculate priority metrics
+              const upvotes = issue.reactions['+1'] || 0;
+              const comments = issue.comments || 0;
+              const ageInDays = (Date.now() - new Date(issue.created_at)) / (1000 * 60 * 60 * 24);
+              
+              // Priority formula: Upvotes (10x weight) + Comments (2x weight) - Age decay (0.5x)
+              const priorityScore = (upvotes * 10) + (comments * 2) - (ageInDays * 0.5);
+              
+              // Current labels
+              const currentLabels = issue.labels.map(l => l.name);
+              const priorityLabels = ['high-priority', 'medium-priority', 'low-priority'];
+              
+              // Remove existing priority labels
+              const labelsToKeep = currentLabels.filter(l => !priorityLabels.includes(l));
+              
+              // Determine new priority label  
+              let newPriorityLabel = null;
+              if (priorityScore >= 30) {
+                newPriorityLabel = 'high-priority';
+              } else if (priorityScore >= 15) {
+                newPriorityLabel = 'medium-priority';
+              } else {
+                newPriorityLabel = 'low-priority';
+              }
+              
+              // Add new priority label if determined
+              const newLabels = newPriorityLabel 
+                ? [...labelsToKeep, newPriorityLabel]
+                : labelsToKeep;
+              
+              // Only update if labels changed
+              if (JSON.stringify(currentLabels.sort()) !== JSON.stringify(newLabels.sort())) {
+                await github.rest.issues.update({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  labels: newLabels
+                });
+                
+                console.log(`Issue #${issue.number}: Score=${priorityScore.toFixed(1)}, Label=${newPriorityLabel || 'none'}`);
+              }
+            }
+            
+            console.log('Prioritization complete!');

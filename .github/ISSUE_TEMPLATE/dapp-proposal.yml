@@ -1,0 +1,98 @@
+name: 💻 DApp Proposal
+description: Define a new DApp using a minimum viable requirements.
+title: "[DApp]: "
+labels: ['dapp-proposal', 'hacktoberfest']
+body:
+  - type: markdown
+    attributes:
+      value: "## Section 1: The Product Vision (The 'Why')"
+
+  - type: input
+    id: dapp-name
+    attributes:
+      label: DApp Name
+      description: What's the working title for your DApp?
+      placeholder: "e.g., 'Proof' Private Journal"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem-statement
+    attributes:
+      label: Problem Statement
+      description: What specific, critical user problem does this solve? Why does this need to exist?
+      placeholder: "Users want to journal digitally but fear their private thoughts being read by platform providers, advertisers, or hackers. Existing 'private' apps rely on trust, not proof."
+    validations:
+      required: true
+      
+  - type: textarea
+    id: user-value-prop
+    attributes:
+      label: Target User & Privacy Value Prop
+      description: Who is the primary user (persona)? What specific, tangible value do they get from this DApp's *privacy* features?
+      placeholder: |
+        - **Target User:** Journalists, whistleblowers, medical patients, or anyone journaling sensitive personal thoughts.
+        - **Privacy Value:** This DApp provides *provable, trustless privacy*. The user doesn't have to trust us; they can be 100% certain their entries are encrypted and theirs alone, with the *option* to prove authorship later (via ZK) if they choose.
+    validations:
+      required: true
+      
+  - type: markdown
+    attributes:
+      value: "## Section 2: The Solution (The 'What')"
+
+  - type: input
+    id: dapp-pitch
+    attributes:
+      label: Executive Summary (The Pitch)
+      description: In a single sentence, describe the DApp and its core benefit.
+      placeholder: "A decentralized journaling app that uses ZK-proofs to keep entries provably private, giving users true ownership of their thoughts."
+    validations:
+      required: true
+      
+  - type: textarea
+    id: user-stories
+    attributes:
+      label: Key Features (MVP User Stories)
+      description: List the core features for the Minimum Viable Product, phrased as user stories (As a [user], I want [action], so that [benefit]).
+      placeholder: |
+        - **As a user,** I want to write and edit an entry, so that it is encrypted and saved privately.
+        - **As a user,** I want to be the only one who can decrypt and read my entries, so that I have full privacy.
+        - **As a user,** I want to (optionally) generate a ZK-proof, so that I can prove I wrote an entry on a certain date without revealing its content.
+        - **As a user,** I want to (optionally) share a specific entry with another user, so that they can decrypt and read only that single entry.
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: "## Section 3: Project & Tech (The 'How' & 'Who')"
+      
+  - type: dropdown
+    id: project-status
+    attributes:
+      label: What's the status of this proposal?
+      description: This helps us understand how we can best support you.
+      options:
+        - "💡 Just an idea - feedback welcome!"
+        - "🛠️ I'm building this and looking for feedback."
+        - "🤝 I'm looking for collaborators to build this."
+        - "🧑‍🏫 I'd like help or guidance from the Midnight team."
+    validations:
+      required: true
+
+  - type: textarea
+    id: tech-stack
+    attributes:
+      label: Proposed Tech Stack (Optional)
+      description: Any thoughts on the tech stack, infrastructure (e.g., IPFS, oracles), or integrations?
+      placeholder: "e.g., React frontend, Midnight smart contracts using Compact, IPFS for encrypted data storage..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: related-links
+    attributes:
+      label: Related Resources (Optional)
+      description: Link to any mockups, prototypes, code, or other discussions.
+      placeholder: "e.g., Figma mockups, link to a similar (non-private) project, relevant articles..."
+    validations:
+      required: false
