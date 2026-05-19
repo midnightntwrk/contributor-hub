@@ -566,3 +566,77 @@ For production deployments, always conduct a security audit focused specifically
 ---
 
 *Written for the Midnight Developer Community. Built and tested with Midnight SDK v2.4.1 and Compact Compiler v1.8.2.*
+
+
+## Appendix: Midnight SDK Integration Reference
+
+### Setting Up Your Development Environment
+
+Before implementing replay protection in your Midnight dApp, ensure your development environment is correctly configured. The Midnight SDK requires Node.js 18+ and Docker for the proof server component. Install the SDK using:
+
+```bash
+npm install @midnight-org/sdk
+```
+
+Configure your environment by creating a `.env` file in your project root with the following variables:
+
+```bash
+MIDNIGHT_CHAIN_ID=<your-chain-id>
+MIDNIGHT_PROVER_URL=http://localhost:3001
+MIDNIGHT_RPC_URL=https://rpc.midnight.network
+```
+
+The proof server must be running before your application can generate ZK proofs. Start it with:
+
+```bash
+docker run -p 3001:3001 midnight/prover:latest
+```
+
+### Prover SDK Usage
+
+The Midnight prover SDK handles the heavy computation of generating zero-knowledge proofs. Here's the typical flow for integrating replay protection:
+
+```typescript
+import { MidnightProver } from '@midnight-org/sdk';
+
+const prover = new MidnightProver({
+  proverUrl: process.env.MIDNIGHT_PROVER_URL,
+});
+
+async function submitProtectedAction(action: Action) {
+  // 1. Generate nullifier locally
+  const nullifier = await computeNullifier({
+    secret: wallet.privateKey,
+    actionId: action.type,
+    nonce: wallet.getNextNonce(),
+    chainId: midnightChain.id,
+  });
+
+  // 2. Build proof
+  const proof = await prover.prove({
+    circuit: action.circuit,
+    publicInputs: { ...action.params, nullifier },
+    privateInputs: { secret: wallet.privateKey, nonce: wallet.getNextNonce() },
+  });
+
+  // 3. Submit to chain
+  return contract.protectedAction(proof, nullifier);
+}
+```
+
+The key insight is that the nullifier computation happens entirely on the client side — the server never learns your private key or current nonce, preserving privacy while enabling secure replay prevention.
+
+### Monitoring and Debugging
+
+When debugging replay protection issues, check the following:
+
+1. **Nullifier conflicts**: If transactions fail with "ACTION_ALREADY_EXECUTED," verify that your nonce management is correct
+2. **Proof staleness**: Proofs are tied to block heights; long-held proofs may become invalid
+3. **Chain ID mismatches**: Ensure your proof was generated for the correct chain
+
+You can verify nullifier state on-chain by querying the contract:
+
+```typescript
+const isUsed = await contract.nullifiers(nullifierHash);
+console.log('Nullifier used:', isUsed);
+```
