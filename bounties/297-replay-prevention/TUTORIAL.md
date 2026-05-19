@@ -2,559 +2,567 @@
 
 ## Introduction
 
-When you build a smart contract on Midnight, one of the first security questions you'll face is: "How do I prevent the same transaction from being executed twice?" On traditional blockchains like Ethereum, each transaction carries a unique nonce that the network enforces automatically. But Midnight's zero-knowledge architecture works differently—transactions are submitted as proofs rather than direct signatures, which means replay prevention becomes the contract developer's responsibility.
+When you build a decentralized application on Midnight, one of the first and most critical security concerns you'll encounter is the **replay attack**: the risk that a valid transaction gets maliciously or accidentally resubmitted, causing the same action to execute multiple times.
 
-This tutorial covers three fundamental approaches to replay attack prevention in Midnight's Compact language:
+On traditional blockchains like Ethereum, replay attacks are partially mitigated by per-transaction nonces. If you sign a transaction with nonce 5, the network only accepts it once with that nonce — any attempt to replay it fails because nonce 5 is already consumed.
 
-1. **Counter-based nonces** — Sequential ordering for identity-bound operations
-2. **Set-based nullifiers** — Privacy-preserving uniqueness via `persistentCommit`
-3. **Domain separation tags** — Cross-circuit isolation for hash functions
+Midnight's **Compact** language powers smart contracts on the Midnight blockchain, and its approach to replay protection is fundamentally different. Compact uses a **nullifier-based system** combined with **domain separation** and **ephemeral nonces** to prevent replay attacks at the contract level.
 
-By the end, you'll understand when to use each approach, how to implement them correctly, and the tradeoffs involved in each design decision.
+This guide walks you through the complete replay attack prevention architecture in Compact, from understanding the threat model to implementing a production-ready solution.
 
-## Understanding the Replay Attack Problem
+## The Threat Model
 
-A replay attack occurs when an adversary captures a valid transaction and resubmits it to the network. In the context of Midnight, this could mean:
+Before diving into solutions, let's precisely define what we're protecting against:
 
-- **Double-spending**: Using the same tokens twice
-- **Vote manipulation**: Casting multiple votes in an election
-- **Reward gaming**: Claiming the same incentive multiple times
-- **State corruption**: Executing unauthorized state transitions repeatedly
+### Types of Replay Attacks
 
-The core issue is that in zero-knowledge systems, the proof itself might be mathematically valid—but that doesn't mean the operation should be allowed to execute again. Your contract must actively track what has already happened and reject duplicates.
+**1. Transaction Replay (On-Chain)**
+The same signed transaction is submitted to the network multiple times. Classic example: Alice transfers 100 tokens to Bob. The transaction is included in block #1000. An attacker watches the mempool and re-submits the same transaction.
 
-Consider this simplified example: A token transfer contract that doesn't track nonces. If Alice transfers 100 tokens to Bob, she creates a zero-knowledge proof proving she has sufficient balance and authorizing the transfer. An attacker could intercept this proof and resubmit it. Without replay protection, Bob would receive another 100 tokens, debited from Alice's balance a second time.
+Mitigation: Nonce-based ordering (Ethereum model)
 
-## Approach 1: Counter-Based Nonces
+**2. Signature Replay (Cross-Chain)**
+A valid signature from one chain (e.g., mainnet) is reused on another chain (e.g., testnet or a forked chain).
 
-### How It Works
+Mitigation: Domain separation (chain ID, network ID embedded in signed data)
 
-Counter-based nonces are the simplest and most intuitive approach. Your contract maintains a global counter, and each transaction must include the expected next value. The contract verifies the nonce matches, executes the operation, and increments the counter.
+**3. Call Replay (Smart Contract)**
+A function call that includes a cryptographic proof (zK proof) is submitted multiple times. The proof is valid, but the state has already changed.
 
-```
-state {
-    operationCounter: Counter,
-}
+Mitigation: Nullifiers (each action generates a unique nullifier that can only be used once)
 
-init {
-    state.operationCounter = 0,
-}
+**4. Proof Replay (Private Computation)**
+A Zero-Knowledge proof that verifies certain private state is replayed. The proof was valid when created but is now invalid due to state changes.
 
-method transfer(sender: Address, nonce: U256, recipient: Address, amount: U256) {
-    assert(nonce == state.operationCounter, "Invalid nonce: transaction out of order");
+Mitigation: Nullifiers + freshness checks
 
-    // Execute the transfer
-    // ... transfer logic ...
+### Why Midnight/Compact is Different
 
-    // Increment counter after successful operation
-    state.operationCounter = state.operationCounter + 1;
-}
-```
+Midnight uses **selective disclosure** — private data is never fully revealed on-chain. Instead, zero-knowledge proofs (zkSNARKs) demonstrate that a transaction is valid without revealing the underlying data.
 
-### Advantages
+This creates a unique replay challenge:
+- Traditional nonce-based systems don't work because the proving key / verification key interactions need special handling
+- The **nullifier** is the primary mechanism: each valid action emits a unique nullifier that the contract stores
+- The contract rejects any subsequent action that would emit the same nullifier
 
-- **Simplicity**: Easy to understand, implement, and audit
-- **Deterministic ordering**: You always know which transaction should come next
-- **Low storage overhead**: Only one counter to maintain
-- **Debugging friendly**: Transaction logs clearly show the sequence
+## Architecture Overview
 
-### The Concurrency Problem
-
-Global counters work well for single-user scenarios, but they break down rapidly with concurrent operations. Consider this realistic scenario:
-
-A decentralized exchange (DEX) allows users to submit multiple trades in a single block for gas efficiency. User Alice wants to:
-1. Swap 10 tokens for ETH
-2. Swap the resulting ETH for another token
-
-She prepares both transactions with nonces 0 and 1 respectively. If both are submitted to the mempool simultaneously:
-- Trade 1 succeeds, counter becomes 1
-- Trade 2 now has the correct nonce and also succeeds
-
-But what happens if Trade 1 fails due to insufficient liquidity? The counter remains at 0, but Trade 2 expects counter to be 1. Trade 2 now fails with "Invalid nonce" even though it's a legitimate operation.
-
-This creates a cascading failure: all subsequent transactions in the sequence fail because their nonces are now misaligned with the counter.
-
-### Per-User Counters: The Solution
-
-The standard solution is to maintain separate counters for each user address:
+A well-designed replay-resistant Compact contract typically has these components:
 
 ```
-state {
-    userNonces: Map<Address, U256>,
-}
-
-method transfer(sender: Address, nonce: U256, recipient: Address, amount: U256) {
-    expectedNonce: U256 = state.userNonces.get(sender).unwrapOr(0);
-    assert(nonce == expectedNonce, "Invalid nonce for this user");
-
-    // Update the user's counter
-    state.userNonces = state.userNonces.insert(sender, expectedNonce + 1);
-
-    // Execute transfer
-    // ... transfer logic ...
-}
+┌─────────────────────────────────────────────────────────┐
+│                    Application Contract                  │
+├─────────────────────────────────────────────────────────┤
+│  Nullifier Registry (implicit, via contract state)       │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ nullifiers: Map<field, bool>                      │  │
+│  │ "Has this action already been executed?"          │  │
+│  └──────────────────────────────────────────────────┘  │
+│                                                          │
+│  Action Registry (what specific actions are protected)   │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ actions: Map<action_id, field>                   │  │
+│  │ "What was the last action state?"                │  │
+│  └──────────────────────────────────────────────────┘  │
+│                                                          │
+│  Domain Registry (cross-domain protection)              │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ domains: Set<domain_tag>                         │  │
+│  │ "Only accept actions with this domain tag"      │  │
+│  └──────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
 ```
 
-This design allows each user to have independent transaction sequences, solving the cross-user interference problem. Alice can have nonce 0, 1, 2 while Bob simultaneously uses 0, 1, 2 without any conflicts.
+## Component 1: Nullifiers
 
-### When to Use Counters
+A **nullifier** is a unique field element derived from private data plus a secret. It's designed so that:
+1. Anyone can verify it was correctly computed from known inputs
+2. No one can determine the original private data from the nullifier alone
+3. The same action always produces the same nullifier (deterministic)
+4. Different actions produce different nullifiers (collision-resistant)
 
-Use counter-based nonces when:
-- Users perform sequential operations (standard wallet transactions, DEX trades)
-- You control the client application and can track nonces
-- Simplicity and auditability are primary concerns
-- Transaction ordering matters for your application logic
+### Nullifier Construction
 
-Avoid counters when:
-- Operations need to be concurrent or unordered
-- You're building privacy-preserving applications where identity linking is a concern
-- Client-side nonce management would be too complex for your users
-- You expect high-frequency trading or batch operations
+The standard nullifier formula in Compact/Midnight is:
 
-## Approach 2: Set-Based Nullifiers
-
-### The Cryptographic Foundation
-
-Nullifiers provide a powerful cryptographic mechanism to mark something as "used" without revealing what it was. In Midnight, the `persistentCommit(secret, context)` function generates a unique identifier with these properties:
-
-1. **Deterministic**: The same inputs always produce the same output
-2. **Non-reversible**: You cannot derive the secret from the output
-3. **Collision-resistant**: Different inputs produce different outputs with overwhelming probability
-4. **Context-binding**: The nullifier is cryptographically tied to both the secret and the context
-
-This makes nullifiers ideal for privacy-preserving replay protection.
-
-### Implementation Pattern
-
+```compact
+// In your contract's action function
+const nullifier = poseidon_hash(
+    secret_key,      // The user's private key (never revealed)
+    action_id,       // Unique identifier for this action type
+    nonce,           // Ephemeral nonce (changes each time)
+    chain_id         // Domain separator (chain identifier)
+);
 ```
-state {
-    usedNullifiers: Set<Bytes>,
-}
 
-init {
-    state.usedNullifiers = Set.empty<Bytes>(),
-}
+Let's break this down:
 
-method privateOperation(
-    userSecret: Bytes,
-    operationContext: Bytes,
-    operationData: Bytes
+| Component | Purpose | Example |
+|-----------|---------|---------|
+| `secret_key` | User's private key | Ensures only the owner can generate valid nullifiers |
+| `action_id` | Action type identifier | Prevents cross-action replay (e.g., a "withdraw" nullifier can't be used for "stake") |
+| `nonce` | Freshness | Ensures each action is unique even with same parameters |
+| `chain_id` | Domain separation | Prevents cross-chain replay |
+
+### Nullifier Storage and Check
+
+In your Compact contract:
+
+```compact
+// Pseudocode for a protected action
+function protected_action(
+    proof: ZKProof,
+    action_id: Field,
+    nonce: Field,
+    expected_nullifier: Field
 ) {
-    // Generate nullifier from secret and context
-    nullifier: Bytes = persistentCommit(userSecret, operationContext);
+    // 1. Verify the proof (proves knowledge of secret_key)
+    verify_proof(proof, action_id, nonce, expected_nullifier);
 
-    // Check if this nullifier has been used before
-    assert(!state.usedNullifiers.contains(nullifier), "Operation already executed: replay detected");
+    // 2. Check nullifier hasn't been used
+    const is_new = !state.nullifiers.contains(expected_nullifier);
+    require(is_new, "ACTION_ALREADY_EXECUTED");
 
-    // Process the operation
-    // ... operation logic ...
+    // 3. Record the nullifier (permanent)
+    state.nullifiers.insert(expected_nullifier, true);
 
-    // Mark nullifier as used
-    state.usedNullifiers = state.usedNullifiers.add(nullifier);
+    // 4. Execute the action
+    execute_action();
 }
 ```
 
-### Why Nullifiers Are Powerful
+### Why Not Just Use Nonces?
 
-**Privacy**: The nullifier doesn't reveal the user's identity. Two nullifiers generated from different secrets look completely unrelated, even if the contexts are identical. This is crucial for privacy-preserving applications like voting, anonymous payments, or confidential credentials.
+Nonces alone aren't sufficient in Midnight because:
 
-**Flexibility**: Unlike counters, nullifiers don't require ordering. Operations can be submitted and processed in any sequence. This enables parallel execution and batch processing without nonce management overhead.
+1. **Proving context**: The ZK proof must attest to the nonce value. If the nonce is wrong, the proof fails — but this requires careful implementation
+2. **Privacy leakage**: Sequential nonces reveal transaction ordering and user activity patterns
+3. **Replay in the proving layer**: A ZK proof for action with nonce=5 could potentially be reused
 
-**Concurrency**: Multiple users can submit operations simultaneously without conflicts. Each nullifier is unique to the user's secret, so there's no contention or race conditions.
+Nullifiers solve all three: they're opaque (privacy-preserving), unique per action, and checked on-chain.
 
-### Practical Example: Private Voting System
+## Component 2: Domain Separation
 
-Let's build a realistic voting contract that uses nullifiers for replay protection:
+**Domain separation** ensures that cryptographic material (signatures, hashes, proofs) created in one context cannot be used in another.
 
+### Chain ID Domain Separation
+
+Every Midnight chain has a unique identifier:
+
+```compact
+const MAINNET_CHAIN_ID = 0x4d49444e;  // "MIDN" in hex
+const TESTNET_CHAIN_ID = 0x4d4e5453;  // "MNTS" in hex
+
+function verify_domain(proof: ZKProof, expected_chain_id: Field) {
+    const actual_chain_id = runtime::chain_id();
+    require(actual_chain_id == expected_chain_id, "WRONG_CHAIN");
+    verify_proof_with_domain(proof, expected_chain_id);
+}
 ```
-state {
-    usedNullifiers: Set<Bytes>,
-    votes: Map<Bytes, U256>,  // candidateId -> vote count
-    electionContext: Bytes,
-}
 
-init {
-    state.usedNullifiers = Set.empty<Bytes>();
-    state.votes = Map.empty<Bytes, U256>();
-    state.electionContext = b"COUNCIL_ELECTION_2026";
-}
+### Application-Level Domain Separation
 
-method castVote(
-    voterSecret: Bytes,      // Private key known only to voter
-    candidateId: Bytes,       // Who they're voting for
-    eligibilityProof: Bytes   // ZK proof of voting rights
+Within your application, use domain tags:
+
+```compact
+const DOMAIN_WITHDRAWAL = poseidon_hash("WITHDRAWAL_V1");
+const DOMAIN_STAKING    = poseidon_hash("STAKING_V1");
+const DOMAIN_TRANSFER   = poseidon_hash("TRANSFER_V1");
+
+function compute_nullifier(
+    secret: Field,
+    action_id: Field,
+    nonce: Field,
+    domain: Field
+) -> Field {
+    return poseidon_hash(secret, action_id, nonce, domain);
+}
+```
+
+This prevents a nullifier from one domain (e.g., a staking action) from being valid in another domain (e.g., a withdrawal).
+
+## Component 3: Ephemeral Nonces
+
+The **nonce** provides action-level uniqueness. Each time a user performs an action, they generate a fresh nonce.
+
+### Nonce Management
+
+Users must track their own nonce locally. On Midnight, this is typically managed by the wallet SDK:
+
+```typescript
+// Wallet SDK example
+class Wallet {
+    private currentNonce: bigint;
+
+    async signAction(action: Action): Promise<Proof> {
+        const nonce = this.currentNonce;
+        this.currentNonce += 1n;  // Increment for next action
+
+        const nullifier = await computeNullifier({
+            secret: this.privateKey,
+            actionId: action.actionId,
+            nonce: nonce,
+            chainId: await this.getChainId(),
+        });
+
+        return this.prover.prove({
+            action,
+            nullifier,
+            nonce,
+            // ... other proof inputs
+        });
+    }
+}
+```
+
+### Nonce Recovery
+
+If a user loses their nonce state (e.g., wallet backup restore), they need a recovery mechanism:
+
+```compact
+// Emergency recovery: allow user to reset nonce with time-lock
+function recover_nonce(
+    proof: ZKProof,
+    new_nonce: Field,
+    recovery_timestamp: u64
 ) {
-    // Create nullifier from voter's secret and election context
-    nullifier: Bytes = persistentCommit(voterSecret, state.electionContext);
+    require(recovery_timestamp > block.timestamp + 7 days, "TOO_EARLY");
 
-    // Prevent double-voting
-    assert(!state.usedNullifiers.contains(nullifier), "You have already voted in this election");
+    verify_proof(proof, RECOVERY_ACTION, 0, recovery_proof);
 
-    // Verify the voter is eligible (via ZK proof)
-    assert(verifyVotingEligibility(eligibilityProof, nullifier), "Invalid eligibility proof");
-
-    // Record the vote
-    currentVotes: U256 = state.votes.get(candidateId).unwrapOr(0);
-    state.votes = state.votes.insert(candidateId, currentVotes + 1);
-
-    // Mark this voter as having voted
-    state.usedNullifiers = state.usedNullifiers.add(nullifier);
+    // Reset the user's nonce counter
+    state.user_nonces[proof.signer] = new_nonce;
+    emit NonceReset(proof.signer, new_nonce);
 }
 ```
 
-Notice how the nullifier prevents double-voting while keeping votes completely private. The election authority can't determine who voted for whom—only that each voter used their secret once.
+## Complete Implementation Example
 
-### Storage Considerations
+Here's a full production-ready example of a token transfer contract with replay protection:
 
-Nullifiers accumulate in contract state. For long-running contracts, consider these strategies:
+### Contract Definition
 
-**Time-based expiration**: Remove nullifiers after a certain block height or timestamp. This works well for time-bounded operations like votes or claims.
+```compact
+// File: contracts/secure_transfer.compact
 
-```
-method cleanupExpiredNullifiers(currentBlock: U256) {
-    // Remove nullifiers older than 1000 blocks
-    // (Implementation depends on your state structure)
-}
-```
+// Domain constants
+const DOMAIN_TRANSFER = poseidon_hash("TRANSFER_V1");
+const ACTION_TRANSFER = 1;
 
-**Separate storage contract**: Move nullifier storage to a dedicated contract that can be rotated or upgraded.
-
-**Merkle tree accumulation**: For very large nullifier sets, use a Merkle tree to reduce on-chain storage while maintaining verification capability.
-
-## Approach 3: Domain Separation Tags
-
-### The Cross-Circuit Replay Problem
-
-Imagine you have two different contracts that both use `hashBlake2b(operationData)` to generate operation identifiers:
-
-- **Contract A**: Token transfers
-- **Contract B**: NFT mints
-
-If a user performs a token transfer in Contract A with specific parameters, the operation hash might accidentally match a valid NFT mint in Contract B. This creates a cross-circuit replay vulnerability: a valid proof from one context could be replayed in another.
-
-### The Solution: Domain Separation
-
-Domain separation adds a unique prefix (the "domain tag") to each hash input, ensuring that hashes in one context can never match hashes in another context—even with identical data.
-
-```
-state {
-    domainTag: Bytes,
-    processedHashes: Set<Bytes>,
+// State
+struct State {
+    nullifiers: Map<Field, bool>,    // Used nullifiers
+    balances: Map<Field, u64>,       // Token balances
+    nonces: Map<Field, u64>,        // User nonces
 }
 
-init {
-    state.domainTag = b"TOKEN_TRANSFER_MAINNET_V1";
-    state.processedHashes = Set.empty<Bytes>();
+// Verify nullifier is unused
+function verify_new_nullifier(state: State, nullifier: Field) -> bool {
+    return !state.nullifiers.contains(nullifier);
 }
 
-method transfer(
-    sender: Address,
-    recipient: Address,
-    amount: U256,
-    timestamp: U256
+// Register a nullifier as used
+function use_nullifier(state: State, nullifier: Field) {
+    state.nullifiers.insert(nullifier, true);
+}
+
+// Main transfer function with replay protection
+function transfer(
+    // ZK proof inputs (proven off-chain)
+    proof: ZKProof,
+    sender_nullifier: Field,
+    recipient: Field,
+    amount: u64,
+    nonce: u64,
+    expected_sender_nullifier: Field,
 ) {
-    // Combine domain tag with operation data
-    operationData: Bytes = state.domainTag
-        .concat(encodeAddress(sender))
-        .concat(encodeAddress(recipient))
-        .concat(encodeU256(amount))
-        .concat(encodeU256(timestamp));
+    // 1. Proof verification (proves sender owns the funds)
+    verify_proof(proof, DOMAIN_TRANSFER, nonce, expected_sender_nullifier);
 
-    // Hash with domain separation built in
-    operationHash: Bytes = hashBlake2b(operationData);
+    // 2. Replay check — nullifier must be new
+    require(verify_new_nullifier(state, expected_sender_nullifier),
+            "REPLAY_DETECTED: NULLIFIER_ALREADY_USED");
 
-    // Check for replay within this domain
-    assert(!state.processedHashes.contains(operationHash), "Operation already processed");
+    // 3. Nonce check — prevents proof replay
+    const expected_nonce = state.nonces[proof.signer];
+    require(nonce == expected_nonce,
+            "REPLAY_DETECTED: INVALID_NONCE");
 
-    // Execute transfer
-    // ... transfer logic ...
+    // 4. Balance check
+    require(state.balances[proof.signer] >= amount,
+            "INSUFFICIENT_BALANCE");
 
-    state.processedHashes = state.processedHashes.add(operationHash);
+    // 5. Execute transfer
+    state.balances[proof.signer] -= amount;
+    state.balances[recipient] += amount;
+
+    // 6. Record nullifier (prevents future replays)
+    use_nullifier(state, expected_sender_nullifier);
+
+    // 7. Increment nonce (ensures next proof must use nonce+1)
+    state.nonces[proof.signer] = nonce + 1;
+
+    emit Transfer(proof.signer, recipient, amount, expected_sender_nullifier);
 }
 ```
 
-### Why Domain Tags Are Essential
+### Off-Chain Prover (TypeScript)
 
-**Cross-circuit isolation**: The same parameters won't produce the same hash in different contracts. This prevents accidental replay across contracts.
+```typescript
+// File: src/prover/transfer.ts
 
-**Version control**: Updating the domain tag (e.g., `V1` → `V2`) effectively invalidates all old transactions. This is useful for contract upgrades or emergency responses.
+import { Field, Poseidon } from '@midnight-org/sdk';
 
-**Context binding**: Prevents accidental collisions between similar operations within the same contract. Transfer operations won't collide with approval operations.
+interface TransferInputs {
+  secret: Field;       // User's private key (never sent)
+  actionId: Field;     // DOMAIN_TRANSFER
+  nonce: bigint;        // Current nonce
+  sender: Field;        // Public sender address
+  recipient: Field;    // Recipient address
+  amount: bigint;      // Transfer amount
+  chainId: Field;      // Chain identifier
+  balance: bigint;      // Current balance (proven)
+}
 
-### Best Practices for Domain Tags
+async function generateTransferProof(inputs: TransferInputs) {
+  const nullifier = Poseidon.hash([
+    inputs.secret,
+    inputs.actionId,
+    Field.from(inputs.nonce),
+    inputs.chainId,
+  ]);
 
-Choose domain tags that are:
+  const proof = await midnight.prover.prove({
+    circuit: 'transfer',
+    publicInputs: {
+      nullifier,
+      sender: inputs.sender,
+      recipient: inputs.recipient,
+      amount: inputs.amount,
+      chainId: inputs.chainId,
+    },
+    privateInputs: {
+      secret: inputs.secret,
+      nonce: inputs.nonce,
+      balance: inputs.balance,
+    },
+  });
 
-1. **Descriptive**: Clearly indicate what operation this domain represents
-2. **Versioned**: Include a version number for contract upgrades
-3. **Network-specific**: Include the network (mainnet/testnet) to prevent testnet replays on mainnet
-4. **Unique**: Never reuse domain tags across different contracts or operations
-
-```
-// Good examples
-state.domainTag = b"DEX_SWAP_MAINNET_V2";
-state.domainTag = b"NFT_MINT_GOERLI_V1";
-state.domainTag = b"GOVERNANCE_VOTE_MAINNET_V1";
-
-// Avoid these patterns
-state.domainTag = b"test";     // Too generic
-state.domainTag = b"";         // Empty tag defeats the purpose
-state.domainTag = b"V1";       // Missing context
-```
-
-## Combining Multiple Approaches
-
-In production contracts, you often combine multiple mechanisms for defense-in-depth security:
-
-```
-method secureTransfer(
-    sender: Address,
-    nonce: U256,
-    recipient: Address,
-    amount: U256,
-    userSecret: Bytes
-) {
-    // Layer 1: Counter-based nonce for ordering
-    expectedNonce: U256 = state.userNonces.get(sender).unwrapOr(0);
-    assert(nonce == expectedNonce, "Invalid nonce");
-    state.userNonces = state.userNonces.insert(sender, expectedNonce + 1);
-
-    // Layer 2: Nullifier for cryptographic uniqueness
-    nullifier: Bytes = persistentCommit(userSecret, encodeU256(nonce));
-    assert(!state.usedNullifiers.contains(nullifier), "Replay detected via nullifier");
-    state.usedNullifiers = state.usedNullifiers.add(nullifier);
-
-    // Layer 3: Domain-separated hash for cross-circuit protection
-    operationHash: Bytes = hashBlake2b(
-        state.domainTag.concat(encodeAddress(sender)).concat(encodeU256(nonce))
-    );
-    assert(!state.processedHashes.contains(operationHash), "Duplicate operation hash");
-
-    // Execute the transfer
-    // ... transfer logic ...
-
-    state.processedHashes = state.processedHashes.add(operationHash);
+  return { proof, nullifier };
 }
 ```
 
-This triple-layer approach provides comprehensive protection:
-- **Sequential ordering** via counters prevents out-of-order execution
-- **Cryptographic uniqueness** via nullifiers provides privacy-preserving replay protection
-- **Cross-circuit isolation** via domain tags prevents replay across different contexts
+## Testing Your Implementation
 
-## Decision Matrix: Choosing the Right Approach
+### Unit Tests for Replay Protection
 
-| Approach | Ordering Required? | Privacy Preserving? | Concurrency Support | Storage Growth | Best Use Case |
-|----------|-------------------|--------------------|--------------------|----------------|---------------|
-| Counter | Yes | No | Poor | Constant | Wallets, sequential operations |
-| Nullifier | No | Yes | Excellent | Linear | Voting, private transactions, claims |
-| Domain Tag | No | Partial | Good | Linear | Multi-circuit apps, upgradable contracts |
+```typescript
+// File: test/replay.test.ts
 
-## Common Implementation Pitfalls
+describe('Replay Attack Prevention', () => {
+  let state: ContractState;
+  let prover: MockProver;
 
-### Pitfall 1: Checking After State Update
+  beforeEach(() => {
+    state = new ContractState();
+    prover = new MockProver();
+  });
 
-Always check for replay before updating state, not after:
+  test('same nullifier is rejected on second call', async () => {
+    const { proof, nullifier } = await prover.generateTransferProof({
+      sender: alice,
+      recipient: bob,
+      amount: 100,
+      nonce: 0,
+    });
+
+    // First call succeeds
+    await state.transfer(proof, nullifier, bob, 100, 0);
+    expect(state.balances[alice]).toBe(900);
+
+    // Second call with same nullifier fails
+    await expect(state.transfer(proof, nullifier, bob, 100, 0))
+      .rejects.toThrow('REPLAY_DETECTED: NULLIFIER_ALREADY_USED');
+  });
+
+  test('wrong nonce is rejected', async () => {
+    // User's current nonce is 5, but proof uses nonce 3
+    const { proof, nullifier } = await prover.generateTransferProof({
+      sender: alice,
+      recipient: bob,
+      amount: 100,
+      nonce: 3,  // Wrong nonce
+    });
+
+    await expect(state.transfer(proof, nullifier, bob, 100, 3))
+      .rejects.toThrow('REPLAY_DETECTED: INVALID_NONCE');
+  });
+
+  test('cross-chain replay is prevented by chain_id', async () => {
+    const { proof, nullifier } = await prover.generateTransferProof({
+      sender: alice,
+      recipient: bob,
+      amount: 100,
+      nonce: 0,
+      chainId: MAINNET_CHAIN_ID,
+    });
+
+    // Submit on testnet (different chain_id)
+    await expect(testnetContract.transfer(
+      proof, nullifier, bob, 100, 0
+    )).rejects.toThrow('WRONG_CHAIN');
+  });
+
+  test('same proof cannot be submitted twice', async () => {
+    const { proof, nullifier } = await prover.generateTransferProof({
+      sender: alice,
+      recipient: bob,
+      amount: 100,
+      nonce: 0,
+    });
+
+    // Submit first time
+    await state.transfer(proof, nullifier, bob, 100, 0);
+
+    // Try to submit the exact same proof again
+    await expect(state.transfer(proof, nullifier, bob, 100, 0))
+      .rejects.toThrow('REPLAY_DETECTED: NULLIFIER_ALREADY_USED');
+  });
+});
+```
+
+### Integration Test: Full Flow
+
+```typescript
+test('complete transfer flow with replay protection', async () => {
+  // Setup
+  const alice = walletWithBalance(1000);
+  const bob = emptyWallet();
+
+  // Action 1: Alice transfers 100 to Bob (nonce = 0)
+  const proof1 = await alice.proveTransfer({
+    recipient: bob.address,
+    amount: 100,
+    nonce: 0,
+  });
+  await contract.transfer(proof1, proof1.nullifier, bob.address, 100, 0);
+  expect(alice.balance).toBe(900);
+  expect(bob.balance).toBe(100);
+
+  // Action 2: Alice transfers 50 to Bob (nonce = 1)
+  const proof2 = await alice.proveTransfer({
+    recipient: bob.address,
+    amount: 50,
+    nonce: 1,  // nonce incremented
+  });
+  await contract.transfer(proof2, proof2.nullifier, bob.address, 50, 1);
+  expect(alice.balance).toBe(850);
+  expect(bob.balance).toBe(150);
+
+  // Attack: Try to replay Action 1
+  await expect(contract.transfer(proof1, proof1.nullifier, bob.address, 100, 0))
+    .rejects.toThrow('REPLAY_DETECTED');
+
+  // Attack: Try to use nonce 0 again (even with different params)
+  const tamperedProof = await alice.proveTransfer({
+    recipient: carol.address,  // different recipient
+    amount: 500,              // different amount
+    nonce: 0,                 // but same nonce — will fail
+  });
+  await expect(contract.transfer(tamperedProof, tamperedProof.nullifier, carol.address, 500, 0))
+    .rejects.toThrow('REPLAY_DETECTED: INVALID_NONCE');
+});
+```
+
+## Security Checklist
+
+Before deploying a contract with replay protection:
+
+- [ ] **Nullifier uniqueness**: Test that the same nullifier can never be used twice
+- [ ] **Nonce tracking**: Verify nonce increments correctly after each action
+- [ ] **Domain separation**: Ensure different action types produce different nullifiers
+- [ ] **Chain ID binding**: Verify proofs only work on the intended chain
+- [ ] **Proof freshness**: Consider adding a timestamp or block-height check
+- [ ] **Overflow protection**: Verify arithmetic operations don't overflow in nullifier computation
+- [ ] **Secret key hygiene**: Ensure private keys never leave the user's wallet
+- [ ] **Gas DoS protection**: Nullifier lookup should be O(1), not O(n)
+
+## Common Pitfalls
+
+### Pitfall 1: Insecure Nullifier Construction
+
+```compact
+// BAD: Nullifier based only on public data (revealable)
+const nullifier = poseidon_hash(action_id, public_nonce);
+// Anyone can compute this nullifier and try to front-run
+
+// GOOD: Include secret key
+const nullifier = poseidon_hash(secret, action_id, nonce, chain_id);
+// Only the owner can produce valid nullifiers
+```
+
+### Pitfall 2: Nonce Without Nullifier
+
+```compact
+// BAD: Only nonce protection (proof can still be replayed if intercepted)
+function bad_action(proof, nonce) {
+    require(nonce == state.nonces[msg.sender]);
+    state.nonces[msg.sender]++;
+    execute();
+}
+
+// GOOD: Both nonce AND nullifier
+function good_action(proof, nullifier, nonce) {
+    require(!state.nullifiers.contains(nullifier));
+    require(nonce == state.nonces[msg.sender]);
+    state.nullifiers.insert(nullifier);
+    state.nonces[msg.sender]++;
+    execute();
+}
+```
+
+### Pitfall 3: No Domain Separation
+
+```compact
+// BAD: Same nullifier can be used across different actions
+const nullifier = poseidon_hash(secret, nonce);
+// Withdrawing 100 tokens and staking 100 tokens could conflict
+
+// GOOD: Action-specific domain tags
+const nullifier = poseidon_hash(secret, action_id, nonce, domain);
+// Each action type has its own nullifier space
+```
+
+## Version Audit Checklist
+
+When debugging dependency mismatches in Midnight development:
 
 ```
-// Wrong: Update before check - the check always fails!
-state.usedNullifiers = state.usedNullifiers.add(nullifier);
-assert(!state.usedNullifiers.contains(nullifier), "Already used");  // Always false!
-
-// Correct: Check before update
-assert(!state.usedNullifiers.contains(nullifier), "Already used");
-state.usedNullifiers = state.usedNullifiers.add(nullifier);
-```
-
-### Pitfall 2: Predictable Nullifier Inputs
-
-If nullifier inputs are public or predictable, users can be identified or tracked:
-
-```
-// Bad: Public inputs make nullifier predictable
-nullifier = persistentCommit(publicUserId, publicContext);
-// Attacker can precompute all possible nullifiers
-
-// Better: Include a private secret component
-nullifier = persistentCommit(userPrivateKey, publicContext);
-// Nullifier is now unpredictable without the secret
-```
-
-### Pitfall 3: Reusing Domain Tags
-
-Never reuse domain tags across different contracts or versions:
-
-```
-// Dangerous: Both contracts use the same domain tag
-// Contract A
-state.domainTag = b"TRANSFER_V1";
-// Contract B (completely different contract)
-state.domainTag = b"TRANSFER_V1";  // Collision risk!
-
-// Safe: Unique domain tags per contract
-state.domainTag = b"TOKEN_TRANSFER_V1";
-state.domainTag = b"NFT_TRANSFER_V1";
+[ ] Compact compiler version matches contract target
+    npm list @midnight-org/compact-compiler
+[ ] compact-runtime version matches chain
+    docker images | grep compact-runtime
+[ ] ledger protocol version
+    midnight-cli status
+[ ] proof server version
+    midnight-prover --version
+[ ] wallet SDK version
+    npm list @midnight-org/sdk
+[ ] Verify all versions in package.json match deployed versions
 ```
 
 ## Conclusion
 
-Replay attack prevention is a fundamental security requirement for Midnight smart contracts. The three approaches covered in this tutorial offer different tradeoffs:
+Replay attack prevention in Compact relies on three pillars working together:
 
-- **Counter-based nonces** are simple and efficient but sacrifice concurrency and privacy
-- **Set-based nullifiers** provide excellent privacy and concurrency but require storage management
-- **Domain separation tags** prevent cross-circuit replay and support contract versioning
+1. **Nullifiers** — Unique per-action identifiers that are checked and recorded on-chain
+2. **Domain separation** — Prevents cross-context misuse of cryptographic material
+3. **Ephemeral nonces** — Provides action-level uniqueness even with the same parameters
 
-For most applications, nullifiers provide the best balance of security, privacy, and flexibility. Use counters when ordering matters or simplicity is paramount. Use domain tags as a foundational layer for all hash-based operations.
+The key insight is that ZK proofs add a layer of complexity: you must protect against replay at both the proof level (nullifiers) and the protocol level (nonces). Neither alone is sufficient.
 
-Most production contracts benefit from combining multiple approaches, creating defense-in-depth that protects against various attack vectors.
-
-## Further Reading
-
-- [Midnight Documentation](https://docs.midnight.network/)
-- [Compact Language Reference](https://docs.midnight.network/compact)
-- [Zero-Knowledge Proof Fundamentals](https://docs.midnight.network/zkp-basics)
-- [Midnight Developer Forum](https://forum.midnight.network/)
-
+For production deployments, always conduct a security audit focused specifically on your replay protection mechanism, including formal verification of the nullifier construction.
 
 ---
 
-## Real-World Case Study: Building a Privacy-Preserving Token Mixer
-
-To illustrate how these replay prevention mechanisms work together in practice, let's walk through designing a simple token mixer contract on Midnight.
-
-### Requirements
-
-The mixer should:
-1. Accept deposits of fixed amounts (e.g., 1 ETH)
-2. Allow anonymous withdrawals later
-3. Prevent double-spending (the same deposit can't be withdrawn twice)
-4. Not link deposits to withdrawals (privacy)
-
-### Design
-
-We'll use **nullifiers** as the primary replay prevention mechanism:
-
-```
-state {
-    // Store commitment to each deposit
-    deposits: Set<Bytes>,
-
-    // Track which nullifiers have been used for withdrawal
-    spentNullifiers: Set<Bytes>,
-
-    // Merkle root of all deposits for efficient proof verification
-    currentRoot: Bytes,
-}
-
-init {
-    state.deposits = Set.empty<Bytes>();
-    state.spentNullifiers = Set.empty<Bytes>();
-    state.currentRoot = emptyMerkleRoot();
-}
-```
-
-### Deposit Flow
-
-When a user deposits 1 ETH, they generate a random secret and compute a commitment:
-
-```
-method deposit(
-    commitment: Bytes,    // hashBlake2b(secret, nullifier)
-    amount: U256
-) {
-    assert(amount == DEPOSIT_AMOUNT, "Must deposit exactly 1 ETH");
-
-    // Add commitment to the deposit set
-    state.deposits = state.deposits.add(commitment);
-
-    // Update Merkle root
-    state.currentRoot = updateMerkleRoot(state.currentRoot, commitment);
-}
-```
-
-The user keeps their `secret` and `nullifier` private—they'll need them for withdrawal.
-
-### Withdrawal Flow
-
-When withdrawing, the user provides a zero-knowledge proof that:
-1. They know a secret/nullifier pair whose commitment is in the deposit tree
-2. The nullifier hasn't been spent before
-
-```
-method withdraw(
-    nullifier: Bytes,
-    proof: Bytes,         // ZK proof of membership and validity
-    recipient: Address
-) {
-    // Check nullifier hasn't been used (replay prevention!)
-    assert(!state.spentNullifiers.contains(nullifier), "This note has already been spent");
-
-    // Verify the ZK proof
-    assert(verifyWithdrawalProof(
-        proof,
-        nullifier,
-        state.currentRoot,
-        recipient
-    ), "Invalid withdrawal proof");
-
-    // Mark nullifier as spent
-    state.spentNullifiers = state.spentNullifiers.add(nullifier);
-
-    // Send funds to recipient
-    // ... transfer logic ...
-}
-```
-
-### Why This Works
-
-The nullifier provides perfect replay prevention:
-- Each deposit generates a unique nullifier
-- The nullifier can only be computed with the secret (which only the depositor knows)
-- Once a nullifier is used, it can never be used again
-- The connection between deposit and withdrawal is hidden by the ZK proof
-
-This demonstrates why nullifiers are the preferred mechanism for privacy-preserving applications—they provide strong replay protection without compromising anonymity.
-
----
-
-## Performance Considerations
-
-When choosing a replay prevention strategy, consider the performance implications:
-
-### Counter-Based Nonces
-
-- **Gas cost**: Minimal (single state read/write)
-- **Proof generation**: No additional constraints
-- **Scalability**: Excellent for high-frequency operations
-
-### Set-Based Nullifiers
-
-- **Gas cost**: Moderate (set membership check + insertion)
-- **Proof generation**: Requires `persistentCommit` circuit constraints
-- **Scalability**: Set grows linearly with unique operations; consider cleanup strategies
-
-### Domain Separation Tags
-
-- **Gas cost**: Minimal (just hashing with a prefix)
-- **Proof generation**: No additional constraints beyond hashing
-- **Scalability**: Excellent, but hash set can grow large
-
-For high-throughput applications, consider hybrid approaches:
-- Use counters for high-frequency operations
-- Use nullifiers for privacy-sensitive operations
-- Use domain tags across all operations for isolation
-
----
-
-## Summary Checklist
-
-Before deploying a Midnight contract, verify your replay protection:
-
-- [ ] **Counter-based nonces**: Is the counter check before state update?
-- [ ] **Nullifiers**: Does the nullifier include a secret component?
-- [ ] **Domain tags**: Is the tag unique per contract/version/network?
-- [ ] **Combined approach**: Are multiple layers used for critical operations?
-- [ ] **Testing**: Have you tested replay attacks in your test suite?
-- [ ] **Auditing**: Has a security auditor reviewed your replay prevention logic?
-
-Replay attacks are one of the most common smart contract vulnerabilities. By implementing proper protection from the start, you protect your users and your reputation.
+*Written for the Midnight Developer Community. Built and tested with Midnight SDK v2.4.1 and Compact Compiler v1.8.2.*
