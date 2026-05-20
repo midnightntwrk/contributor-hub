@@ -1,0 +1,31 @@
+{
+  "name": "shielded-token-tutorial",
+  "version": "1.0.0",
+  "description": "Complete shielded token operations tutorial for Midnight Network",
+  "type": "module",
+  "scripts": {
+    "compile": "compactc --skip-zk src/contract/Token.compact managed/",
+    "compile:zk": "compactc --zk src/contract/Token.compact managed/",
+    "test": "vitest run --reporter=verbose",
+    "test:watch": "vitest --reporter=verbose",
+    "deploy": "tsx src/deploy.ts"
+  },
+  "dependencies": {
+    "@midnight-ntwrk/compact-runtime": "^0.16.0",
+    "@midnight-ntwrk/ledger-app": "^0.10.0"
+  },
+  "devDependencies": {
+    "@midnight-ntwrk/compactc": "^0.31.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0",
+    "tsx": "^4.7.0"
+  },
+  "keywords": [
+    "midnight",
+    "shielded-token",
+    "zero-knowledge",
+    "compact",
+    "tutorial"
+  ],
+  "license": "Apache-2.0"
+}
