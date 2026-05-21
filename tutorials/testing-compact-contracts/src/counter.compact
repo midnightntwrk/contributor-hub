@@ -1,0 +1,42 @@
+// Simple Counter contract for testing tutorial
+// Bounty #312 — midnightntwrk/contributor-hub
+
+import CompactStandardLibrary;
+
+export ledger count: Uint<64>;
+export ledger lastIncrementor: Bytes<32>;
+
+witness secretKey(): Bytes<32>;
+
+circuit publicKey(_sk: Bytes<32>): Bytes<32> {
+    return persistentHash<Vector<2, Bytes<32>>>([
+        pad(32, "counter:auth:pk"),
+        _sk
+    ]);
+}
+
+constructor() {
+    count = 0u64;
+    lastIncrementor = pad(32, "");
+}
+
+export circuit increment(by: Uint<64>): [] {
+    const _sk = secretKey();
+    const pk = publicKey(_sk);
+
+    assert(by > 0u64, "Increment must be positive");
+    count = disclose(count + by);
+    lastIncrementor = disclose(pk);
+}
+
+export circuit reset(): [] {
+    const _sk = secretKey();
+    const pk = publicKey(_sk);
+
+    count = disclose(0u64);
+    lastIncrementor = disclose(pk);
+}
+
+export circuit readCount(): Uint<64> {
+    return count;
+}

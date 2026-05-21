@@ -1,0 +1,42 @@
+name: Test Compact Contract
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci
+      - name: Compile Compact contracts
+        run: npx compact compile contracts/*.compact
+      - name: Run unit tests
+        run: npx vitest run --reporter=verbose
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci
+      - name: Start Midnight Docker Stack
+        run: docker compose -f docker-compose.test.yml up -d
+      - name: Wait for services
+        run: sleep 30
+      - name: Run integration tests
+        run: npx vitest run --config vitest.integration.config.ts
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker-compose.test.yml down
