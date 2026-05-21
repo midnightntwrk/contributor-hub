@@ -1,0 +1,27 @@
+// contracts/version-mismatch-demo.compact
+//
+// A simple Compact contract to demonstrate proof server compatibility.
+// When the proof server version doesn't match the ledger version,
+// this contract will deploy successfully but fail to submit transactions.
+//
+// Use with: npx midnight-compact build contracts/version-mismatch-demo.compact
+
+export circuit VersionCheck {
+    // A simple state that stores the last verification block
+    ledger lastVerifiedBlock: BigInt<64>;
+
+    // Verify proof server is working by recording a check-in
+    export circuit verify(blockNumber: BigInt<64>): [] {
+        // Simple state transition — if proof server is healthy,
+        // this will produce a valid proof
+        lastVerifiedBlock = blockNumber;
+
+        // If the proof server fails silently, this won't execute
+        // and you'll see a timeout or proof rejection
+    }
+
+    // Read the last verified block (public)
+    export query lastBlock(): BigInt<64> {
+        return lastVerifiedBlock;
+    }
+}
