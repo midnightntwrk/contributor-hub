@@ -1,0 +1,65 @@
+// Security Checklist for Midnight dApps — Vulnerable Anti-Patterns
+// WARNING: These patterns are intentionally vulnerable — DO NOT use in production!
+//
+// Bounty #320 — midnightntwrk/contributor-hub
+
+import CompactStandardLibrary;
+
+export ledger authority: Bytes<32>;
+export ledger balance: Uint<64>;  // ⚠️ Raw balance exposed
+export ledger storedValue: Bytes<32>;
+
+witness secretKey(): Bytes<32>;
+
+// ❌ VULNERABLE: Using ownPublicKey() for authentication
+export circuit vulnerableWithdraw(amount: Uint<64>): [] {
+    // ownPublicKey() is a WITNESS function — the user's frontend
+    // can return ANY value. NEVER use it for authentication!
+    const caller = ownPublicKey();
+    assert(caller == authority, "Unauthorized");  // ❌ CAN BE BYPASSED
+
+    balance = disclose(balance - amount);
+}
+
+// ❌ VULNERABLE: Early disclosure leaks through code paths
+circuit getSecret(): Bytes<32> {
+    return secretKey();
+}
+
+export circuit vulnerableStore(flag: Boolean): [] {
+    const secret = disclose(getSecret());  // ❌ Disclosed too early!
+    // If flag is false, secret is still visible on ledger
+    storedValue = disclose(flag) ? secret : disclose(pad(32, "default"));
+}
+
+// ❌ VULNERABLE: No replay protection
+export circuit vulnerableSpend(amount: Uint<64>): [] {
+    // ❌ No nullifier or nonce check!
+    // An attacker can replay this transaction multiple times
+    balance = disclose(balance - amount);
+}
+
+// ❌ VULNERABLE: No input validation on witness data
+witness getUserBalance(): Uint<64>;
+
+export circuit vulnerableTransfer(amount: Uint<64>): [] {
+    const bal = getUserBalance();  // ❌ Trusting witness without validation
+    // No bounds checking on amount!
+    // No assertion that amount <= bal!
+    balance = disclose(bal - amount);  // ❌ Underflow possible
+}
+
+// ❌ VULNERABLE: Reusing randomness across commitments
+export ledger commitment1: Bytes<32>;
+export ledger commitment2: Bytes<32>;
+
+export circuit vulnerableCommit(val1: Uint<64>, val2: Uint<64>, rand: Bytes<32>): [] {
+    commitment1 = persistentCommit(val1, rand);  // ❌ Same rand!
+    commitment2 = persistentCommit(val2, rand);  // ❌ Linkable!
+}
+
+// ❌ VULNERABLE: Leaking sensitive info in error messages
+export circuit vulnerableOperation(): [] {
+    const _sk = secretKey();
+    assert(_sk != pad(32, ""), "Secret key is empty: " ++ disclose(_sk));  // ❌ Leaks secret!
+}

@@ -1,0 +1,95 @@
+// Security Checklist for Midnight dApps — Secure Patterns
+// Compact contract demonstrating best practices
+//
+// Bounty #320 — midnightntwrk/contributor-hub
+
+import CompactStandardLibrary;
+
+// ── Ledger State ──────────────────────────────────────────────────────────
+
+// Public ledger fields — review carefully!
+export ledger authority: Bytes<32>;
+export ledger usedNullifiers: Set<Bytes<32>>;
+export ledger balanceCommitment: Bytes<32>;
+export ledger nonce: Uint<64>;
+
+// Sealed field — immutable after deployment
+sealed export ledger contractVersion: Uint<32>;
+
+// ── Witness Declarations ──────────────────────────────────────────────────
+
+witness secretKey(): Bytes<32>;
+witness getBalance(): Uint<64>;
+witness getCommitmentRand(): Bytes<32>;
+
+// ── Helper Circuits ───────────────────────────────────────────────────────
+
+circuit publicKey(_sk: Bytes<32>): Bytes<32> {
+    return persistentHash<Vector<2, Bytes<32>>>([
+        pad(32, "midnight:auth:pk"),
+        _sk
+    ]);
+}
+
+circuit nullifier(sk: Bytes<32>): Bytes<32> {
+    return persistentHash<Vector<2, Bytes<32>>>([
+        pad(32, "nullifier-domain"),
+        sk
+    ]);
+}
+
+// ── Constructor ───────────────────────────────────────────────────────────
+
+constructor(version: Uint<32>) {
+    // Sealed fields can only be set here
+    contractVersion = version;
+}
+
+// ── Exported Circuits ─────────────────────────────────────────────────────
+
+// ✅ SECURE: Authentication via hash-based public key derivation
+export circuit authenticate(): [] {
+    const _sk = secretKey();
+    const pk = publicKey(_sk);
+
+    // disclose() is deliberate — we want this on the public ledger
+    authority = disclose(pk);
+}
+
+// ✅ SECURE: Spend with nullifier-based replay protection
+export circuit spend(amount: Uint<64>): [] {
+    // 1. Verify caller
+    const _sk = secretKey();
+    const pk = publicKey(_sk);
+    assert(disclose(pk) == authority, "Authorization failed");
+
+    // 2. Verify balance (from witness — must validate!)
+    const balance = getBalance();
+    assert(balance >= amount, "Insufficient balance");
+    assert(amount > 0, "Amount must be positive");
+
+    // 3. Replay protection via nullifier
+    const nul = nullifier(_sk);
+    assert(!usedNullifiers.member(nul), "Already spent");
+    usedNullifiers.insert(disclose(nul));
+
+    // 4. Update commitment-based balance
+    const rand = getCommitmentRand();
+    balanceCommitment = persistentCommit(balance - amount, rand);
+}
+
+// ✅ SECURE: Nonce-based replay protection
+export circuit incrementNonce(): [] {
+    // Verify caller
+    const _sk = secretKey();
+    const pk = publicKey(_sk);
+    assert(disclose(pk) == authority, "Authorization failed");
+
+    // Monotonically increasing nonce
+    nonce = disclose(nonce + 1);
+}
+
+// ✅ SECURE: Version check
+export circuit checkVersion(expected: Uint<32>): [] {
+    assert(contractVersion == expected, "Version mismatch");
+}
