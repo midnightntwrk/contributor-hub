@@ -1,0 +1,10 @@
+{
+  "name": "thinking-in-compact-examples",
+  "version": "1.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "node test/merkle-proof.test.js"
+  },
+  "devDependencies": {}
+}

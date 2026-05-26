@@ -1,0 +1,40 @@
+// This file is part of midnightntwrk/contributor-hub.
+// Copyright (C) 2026 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+pragma language_version >= 0.20;
+
+import CompactStandardLibrary;
+
+export ledger allowlist: MerkleTree<3, Bytes<32>>;
+export ledger successfulChecks: Counter;
+
+witness privateLeaf(): Bytes<32>;
+witness privatePath(leaf: Bytes<32>): MerkleTreePath<3, Bytes<32>>;
+
+export circuit insertPublicLeaf(leaf: Bytes<32>): [] {
+  assert(!allowlist.isFull(), "Allowlist tree is full");
+  allowlist.insert(leaf);
+}
+
+export circuit proveMember(): [] {
+  const leaf = privateLeaf();
+  const path = privatePath(leaf);
+  const computedRoot = merkleTreePathRoot<3, Bytes<32>>(path);
+
+  assert(path.leaf == leaf, "Witness path is for a different leaf");
+  assert(allowlist.checkRoot(computedRoot), "Invalid Merkle membership proof");
+
+  successfulChecks.increment(1);
+}
