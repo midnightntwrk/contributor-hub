@@ -1,0 +1,13 @@
+{
+  "name": "midnight-anonymous-membership-proofs",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sparse Merkle allowlist tutorial and tested reference implementation for Midnight anonymous membership proofs.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

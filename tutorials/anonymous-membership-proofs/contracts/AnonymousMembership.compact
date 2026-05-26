@@ -1,0 +1,105 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+pragma language_version >= 0.20;
+
+import CompactStandardLibrary;
+
+export ledger root: Bytes<32>;
+export ledger adminCommitment: Bytes<32>;
+export ledger acceptedCount: Counter;
+export ledger nullifiers: Map<Bytes<32>, Boolean>;
+
+witness adminSecret(): Bytes<32>;
+witness memberLeaf(): Bytes<32>;
+witness memberIndex(): Uint<32>;
+witness memberPath(): Vector<20, Bytes<32>>;
+
+circuit hashLeafSecret(secret: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([
+    pad(32, "midnight:anonymous-membership:leaf:v1"),
+    secret
+  ]);
+}
+
+circuit hashAdmin(secret: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([
+    pad(32, "midnight:anonymous-membership:admin:v1"),
+    secret
+  ]);
+}
+
+circuit hashNullifier(scope: Bytes<32>, secret: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "midnight:anonymous-membership:nullifier:v1"),
+    scope,
+    secret
+  ]);
+}
+
+circuit hashNode(left: Bytes<32>, right: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>([
+    pad(32, "midnight:anonymous-membership:node:v1"),
+    left,
+    right
+  ]);
+}
+
+circuit verifyDepth20Path(
+  leaf: Bytes<32>,
+  index: Uint<32>,
+  path: Vector<20, Bytes<32>>,
+  expectedRoot: Bytes<32>
+): Boolean {
+  let current = leaf;
+  let cursor = index;
+
+  for (let level = 0; level < 20; level = level + 1) {
+    const sibling = path[level];
+    if (cursor % 2 == 0) {
+      current = hashNode(current, sibling);
+    } else {
+      current = hashNode(sibling, current);
+    }
+    cursor = cursor / 2;
+  }
+
+  return current == expectedRoot;
+}
+
+constructor(initialRoot: Bytes<32>) {
+  adminCommitment = disclose(hashAdmin(adminSecret()));
+  root = disclose(initialRoot);
+}
+
+export circuit pushRoot(newRoot: Bytes<32>): [] {
+  assert(hashAdmin(adminSecret()) == adminCommitment, "only admin can update root");
+  root = disclose(newRoot);
+}
+
+export circuit proveMembership(scope: Bytes<32>, memberSecret: Bytes<32>): Bytes<32> {
+  const leaf = hashLeafSecret(memberSecret);
+  assert(leaf == memberLeaf(), "leaf does not match member secret");
+
+  const nullifier = hashNullifier(scope, memberSecret);
+  assert(nullifiers.lookup(nullifier) != true, "nullifier already used");
+
+  const verified = verifyDepth20Path(memberLeaf(), memberIndex(), memberPath(), root);
+  assert(verified, "invalid membership proof");
+
+  nullifiers.insert(nullifier, true);
+  acceptedCount.increment(1);
+  return disclose(nullifier);
+}
