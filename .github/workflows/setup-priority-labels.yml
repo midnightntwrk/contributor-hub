@@ -1,0 +1,55 @@
+name: Setup Priority Labels
+
+on:
+  workflow_dispatch:  # Manual trigger only
+
+permissions:
+  issues: write
+
+jobs:
+  create-labels:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Create Priority Labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = [
+              {
+                name: 'high-priority',
+                color: 'd73a4a',  // Red
+                description: 'High priority issue (50+ priority score)'
+              },
+              {
+                name: 'medium-priority',
+                color: 'fbca04',  // Yellow
+                description: 'Medium priority issue (20-49 priority score)'
+              },
+              {
+                name: 'low-priority',
+                color: '0e8a16',  // Green
+                description: 'Low priority issue (0-19 priority score)'
+              }
+            ];
+            
+            for (const label of labels) {
+              try {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: label.name,
+                  color: label.color,
+                  description: label.description
+                });
+                console.log(`✅ Created label: ${label.name}`);
+              } catch (error) {
+                if (error.status === 422) {
+                  console.log(`⚠️  Label already exists: ${label.name}`);
+                } else {
+                  throw error;
+                }
+              }
+            }
+            
+            console.log('✅ All labels created!');

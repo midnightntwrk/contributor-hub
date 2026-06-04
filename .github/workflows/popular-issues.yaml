@@ -1,0 +1,80 @@
+name: Highlight Popular Issues
+
+on:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+env:
+  # --- CONFIGURATION ---
+  # The label to add to popular issues. Make sure this label exists in your repository.
+  LABEL_NAME: 'HOT'
+  # The number of "thumbs up" reactions required.
+  # The script will label issues with a vote count GREATER THAN this number.
+  # Setting it to 0 means any issue with 1 or more votes gets the label.
+  VOTE_THRESHOLD: 0
+  # --- END CONFIGURATION ---
+
+jobs:
+  highlight-popular-issues:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write # Required to add/remove labels
+      contents: read # Required to checkout the repo
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  #v6.0.2
+
+      - name: Label Popular Issues
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+        with:
+          # Use the built-in GITHUB_TOKEN for simplicity and security
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const LABEL_NAME = process.env.LABEL_NAME;
+            const THRESHOLD = parseInt(process.env.VOTE_THRESHOLD, 10);
+
+            if (!LABEL_NAME || isNaN(THRESHOLD)) {
+              core.setFailed('LABEL_NAME or VOTE_THRESHOLD environment variables are not set correctly.');
+              return;
+            }
+
+            console.log(`Searching for issues with more than ${THRESHOLD} 👍 reactions to label with '${LABEL_NAME}'.`);
+
+            // Paginate through all open issues in the repository
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100
+            });
+
+            for (const issue of issues) {
+              // Exclude pull requests, as they are also returned by the issues endpoint
+              if (issue.pull_request) {
+                continue;
+              }
+
+              const voteCount = issue.reactions['+1'];
+              const hasLabel = issue.labels.some(label => label.name === LABEL_NAME);
+
+              // Condition 1: Issue is popular but doesn't have the label yet
+              if (voteCount > THRESHOLD && !hasLabel) {
+                console.log(`Adding label to issue #${issue.number} which has ${voteCount} votes.`);
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: [LABEL_NAME]
+                });
+              }
+              // Condition 2: Issue has the label but is no longer popular
+              else if (voteCount <= THRESHOLD && hasLabel) {
+                console.log(`Removing label from issue #${issue.number} which now has only ${voteCount} votes.`);
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  name: LABEL_NAME
+                });
+              }
+            }

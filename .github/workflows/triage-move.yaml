@@ -1,0 +1,27 @@
+name: Move Triaged Issues
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  move-issue:
+    runs-on: ubuntu-latest
+    if: github.event.label.name == 'triaged'
+    steps:
+      - name: Add to Grab n Go Board
+        uses: actions/add-to-project@v1.0.2
+        with:
+          project-url: https://github.com/orgs/midnightntwrk/projects/37
+          # Use the PAT stored in secrets
+          github-token: ${{ secrets.COMMUNITY_BOARD }}
+
+      - name: Remove from Community Board
+        uses: monry/actions-delete-issue-from-project@v2.0.1
+        with:
+          # Use the PAT stored in secrets
+          github-token: ${{ secrets.COMMUNITY_BOARD }}
+          project-owner: midnightntwrk
+          project-number: 36
+          issue-repository: ${{ github.repository }}
+          issue-number: ${{ github.event.issue.number }}
