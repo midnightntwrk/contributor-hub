@@ -1,0 +1,77 @@
+// Merkle-tree-based allowlist with depth-20 path verification
+// This contract manages a whitelist of addresses using a Merkle tree of depth 20.
+
+contract MerkleAllowlist {
+    // Merkle tree depth
+    const DEPTH: Uint8 = 20;
+
+    // The Merkle root (hash of the current state)
+    var root: Digest = Digest::zero();
+
+    // The current number of leaves
+    var leafCount: Uint32 = 0;
+
+    // Add a leaf to the tree
+    pub fn addLeaf(leaf: Digest): () {
+        // In a real implementation, you would update the tree structure.
+        // For simplicity, we compute a new root assuming a full binary tree.
+        // This is a placeholder for actual Merkle tree insertion logic.
+        let newLeafCount = leafCount + 1;
+        let newRoot = computeRoot(leaf, leafCount);
+        root = newRoot;
+        leafCount = newLeafCount;
+    }
+
+    // Verify a path to a leaf
+    pub fn verifyLeaf(leaf: Digest, path: Vector<Digest>, index: Uint32): Bool {
+        // Verify the path from leaf to root
+        let computedRoot = computeRootFromPath(leaf, path, index);
+        computedRoot == root
+    }
+
+    // Remove a leaf (by replacing with zero or recomputing root)
+    pub fn removeLeaf(index: Uint32): () {
+        // Placeholder: in a real implementation, you would update the tree.
+        // For simplicity, we set root to zero and reset leafCount.
+        root = Digest::zero();
+        leafCount = 0;
+    }
+
+    // Helper to compute root from leaf, path, and index
+    private fn computeRootFromPath(leaf: Digest, path: Vector<Digest>, index: Uint32): Digest {
+        var current = leaf;
+        var idx = index;
+        for (i in 0..path.len()) {
+            let sibling = path[i];
+            if ((idx & 1) == 0) {
+                current = hash(current, sibling);
+            } else {
+                current = hash(sibling, current);
+            }
+            idx = idx >> 1;
+        }
+        current
+    }
+
+    // Helper to compute new root after adding a leaf
+    private fn computeRoot(newLeaf: Digest, previousCount: Uint32): Digest {
+        // Placeholder: returns a dummy root
+        hash(newLeaf, Digest::fromUint32(previousCount))
+    }
+
+    // Use a cryptographic hash function (e.g., SHA256 via Midnight's hash)
+    private fn hash(a: Digest, b: Digest): Digest {
+        // In Compact, use built-in hash
+        Digest::hash(a.concat(b))
+    }
+
+    // Query current root
+    pub fn getRoot(): Digest {
+        root
+    }
+
+    // Query leaf count
+    pub fn getLeafCount(): Uint32 {
+        leafCount
+    }
+}

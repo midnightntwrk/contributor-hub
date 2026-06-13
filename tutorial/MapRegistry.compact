@@ -1,0 +1,32 @@
+// Map-based registry example
+// This contract maintains a registry of key-value pairs using a Map.
+
+contract MapRegistry {
+    // Map declaration
+    var registry: Map<Uint8, String> = Map::empty();
+
+    // Insert a key-value pair
+    pub fn insert(key: Uint8, value: String): () {
+        registry = registry.insert(key, value);
+    }
+
+    // Lookup a value by key
+    pub fn lookup(key: Uint8): Option<String> {
+        registry.get(key)
+    }
+
+    // Delete a key-value pair
+    pub fn delete(key: Uint8): () {
+        registry = registry.remove(key);
+    }
+
+    // Iterate over all entries
+    pub fn iterate(): Vector<(Uint8, String)> {
+        registry.entries()
+    }
+
+    // Helper to get current size
+    pub fn size(): Uint32 {
+        registry.size()
+    }
+}
