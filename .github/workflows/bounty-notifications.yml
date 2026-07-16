@@ -24,8 +24,8 @@ jobs:
       - name: Send Discord Notification
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          BOUNTY_INFO: ${{ steps.bounty_info.outputs.result }}
         run: |
-          BOUNTY_INFO='${{ steps.bounty_info.outputs.result }}'
           TITLE=$(echo "$BOUNTY_INFO" | jq -r '.title')
           URL=$(echo "$BOUNTY_INFO" | jq -r '.url')
           
