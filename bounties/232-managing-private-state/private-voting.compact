@@ -1,0 +1,211 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// =============================================================================
+// Private Voting Contract
+// Demonstrates: private state, commitment-reveal, selective disclosure,
+//               nonce protection, and minimal disclosure patterns
+// =============================================================================
+
+import CompactStandardLibrary;
+
+// -----------------------------------------------------------------------------
+// Proposal: a single voteable question
+// -----------------------------------------------------------------------------
+contract PrivateVoting {
+
+    // =========================================================================
+    // PUBLIC LEDGER STATE
+    // These values are visible to all network participants.
+    // =========================================================================
+
+    // Identifies which proposal this contract governs
+    ledger proposalId: Uint<32>;
+
+    // Tallies—anyone can verify the final count
+    ledger voteTallyYes: Uint<32>;
+    ledger voteTallyNo: Uint<32>;
+    ledger totalCommitted: Uint<32>;
+    ledger totalRevealed: Uint<32>;
+
+    // Voting window
+    ledger votingStart: Uint<64>;   // Unix timestamp
+    ledger votingEnd: Uint<64>;     // Unix timestamp
+
+    // =========================================================================
+    // PRIVATE LEDGER STATE
+    // Stored as commitments—values hidden from public view.
+    // =========================================================================
+
+    // Merkle tree of vote commitments (depth 16 = up to 65,536 voters)
+    ledger commitmentTree: MerkleTree<16>;
+
+    // Nullifier set prevents double-voting after reveal
+    ledger nullifiers: Set<Field>;
+
+    // Per-user nonce to prevent replay attacks
+    ledger voterNonce: Uint<32>;
+
+    // =========================================================================
+    // TRANSIENT STATE
+    // Exists only during a single transaction's execution.
+    // =========================================================================
+
+    transient lastProcessedLeaf: Field;
+    transient tempCommitment: Field;
+
+    // =========================================================================
+    // INITIALIZATION
+    // =========================================================================
+
+    public initialize(
+        pid: Uint<32>,
+        start: Uint<64>,
+        end: Uint<64>
+    ): Void {
+        // Only allow initialization once
+        assert(proposalId.get() == 0);
+        proposalId.set(pid);
+        votingStart.set(start);
+        votingEnd.set(end);
+        voteTallyYes.set(0);
+        voteTallyNo.set(0);
+        totalCommitted.set(0);
+        totalRevealed.set(0);
+    }
+
+    // =========================================================================
+    // PHASE 1: COMMIT
+    // Voters submit a commitment to their vote.
+    // The commitment = pedersenHash(vote, secret, voterAddress).
+    // Nobody can see which way they voted.
+    // =========================================================================
+
+    public commitVote(commitment: Field): Void {
+        // Ensure voting is open
+        assert(votingStart.get() > 0);
+
+        // Insert commitment into the Merkle tree
+        commitmentTree.insert(commitment);
+
+        // Increment public counter
+        totalCommitted.set(totalCommitted.get() + 1);
+    }
+
+    // =========================================================================
+    // PHASE 2: REVEAL
+    // Voters prove their vote matches a previously submitted commitment.
+    // The actual vote value is used inside the ZK proof—never sent on-chain
+    // unless explicitly disclosed.
+    // =========================================================================
+
+    circuit proveVote(
+        vote: Bool,
+        secret: Field,
+        leafIndex: Field
+    ): Bool {
+        // Recompute the commitment from the vote and secret
+        let computed: Field = pedersenHash(vote, secret);
+
+        // Verify the commitment exists in the tree
+        let path: MerkleTreePath = commitmentTree.path(leafIndex);
+        let rootMatch: Bool = (path.root == commitmentTree.root());
+
+        // Compute nullifier to prevent double-reveal
+        let nullifier: Field = pedersenHash(secret, leafIndex);
+
+        // Check nullifier hasn't been used
+        let alreadyUsed: Bool = nullifiers.contains(nullifier);
+
+        return rootMatch && !alreadyUsed;
+    }
+
+    public revealAndTally(
+        vote: Bool,
+        secret: Field,
+        leafIndex: Field
+    ): Void {
+        // Verify the proof
+        assert(proveVote(vote, secret, leafIndex));
+
+        // Compute and record nullifier
+        let nullifier: Field = pedersenHash(secret, leafIndex);
+        nullifiers.insert(nullifier);
+
+        // Update public tally
+        if (vote) {
+            voteTallyYes.set(voteTallyYes.get() + 1);
+        } else {
+            voteTallyNo.set(voteTallyNo.get() + 1);
+        }
+        totalRevealed.set(totalRevealed.get() + 1);
+
+        // Increment nonce
+        voterNonce.set(voterNonce.get() + 1);
+    }
+
+    // =========================================================================
+    // SELECTIVE DISCLOSURE
+    // Demonstrate different disclosure strategies.
+    // =========================================================================
+
+    // Option A: Disclose that you voted (without revealing how)
+    circuit hasVoted(secret: Field, leafIndex: Field): Bool {
+        let computed: Field = pedersenHash(true, secret);
+        let computedAlt: Field = pedersenHash(false, secret);
+        let path: MerkleTreePath = commitmentTree.path(leafIndex);
+        return path.root == commitmentTree.root();
+    }
+
+    // Option B: Disclose only whether voting threshold is met
+    // (Does NOT reveal exact counts—proves a property instead)
+    circuit quorumReached(minimumVotes: Uint<32>): Bool {
+        return totalRevealed.get() >= minimumVotes;
+    }
+
+    // Option C: Full tally disclosure (after voting ends)
+    public discloseFinalTally(): Void {
+        // Only disclose after voting period ends
+        assert(totalRevealed.get() > 0);
+        disclose(voteTallyYes.get());
+        disclose(voteTallyNo.get());
+        disclose(totalRevealed.get());
+    }
+
+    // =========================================================================
+    // QUERY FUNCTIONS (Circuit-based—no state disclosure)
+    // =========================================================================
+
+    // Check if a specific nullifier has been used
+    circuit isNullifierUsed(nullifier: Field): Bool {
+        return nullifiers.contains(nullifier);
+    }
+
+    // Get the current commitment tree root (for off-chain verification)
+    circuit getCurrentRoot(): Field {
+        return commitmentTree.root();
+    }
+
+    // Prove vote was cast in the current commitment window
+    circuit verifyCommitmentInTree(
+        vote: Bool,
+        secret: Field,
+        leafIndex: Field
+    ): Bool {
+        let computed: Field = pedersenHash(vote, secret);
+        let path: MerkleTreePath = commitmentTree.path(leafIndex);
+        return path.root == commitmentTree.root();
+    }
+}

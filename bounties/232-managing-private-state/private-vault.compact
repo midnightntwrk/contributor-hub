@@ -1,0 +1,214 @@
+// This file is part of contributor-hub.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// =============================================================================
+// Private State Vault
+// Demonstrates: private balances, nonce protection, state machines,
+//               conditional disclosure, and atomic multi-state updates
+// =============================================================================
+
+import CompactStandardLibrary;
+
+contract PrivateVault {
+
+    // =========================================================================
+    // PUBLIC STATE
+    // =========================================================================
+
+    // Total deposits tracked publicly (aggregate only)
+    ledger totalDeposits: Uint<64>;
+
+    // Vault configuration (public, set at deploy time)
+    ledger maxCapacity: Uint<64>;
+    ledger vaultNonce: Uint<32>;
+
+    // =========================================================================
+    // PRIVATE STATE
+    // =========================================================================
+
+    // User's private balance (commitment)
+    ledger balance: Uint<64>;
+
+    // Owner identity (public key for access control)
+    ledger ownerKey: Field;
+
+    // Transaction counter for replay protection
+    ledger txNonce: Uint<32>;
+
+    // Account status: 0=Active, 1=Frozen, 2=Closed
+    ledger accountStatus: Uint<8>;
+
+    // Encrypted metadata (off-chain reference)
+    ledger metadataCommitment: Field;
+
+    // =========================================================================
+    // DEPOSIT (increases private balance)
+    // =========================================================================
+
+    public deposit(amount: Uint<64>): Void {
+        assert(amount > 0);
+        assert(accountStatus.get() == 0); // Must be active
+
+        let current: Uint<64> = balance.get();
+        let newBalance: Uint<64> = current + amount;
+
+        // Check capacity
+        assert(newBalance <= maxCapacity.get());
+
+        // Atomic update: balance + nonce + public total
+        balance.set(newBalance);
+        txNonce.set(txNonce.get() + 1);
+        totalDeposits.set(totalDeposits.get() + amount);
+    }
+
+    // =========================================================================
+    // WITHDRAW (decreases private balance, proves sufficiency)
+    // =========================================================================
+
+    circuit authorizeWithdrawal(
+        amount: Uint<64>,
+        expectedNonce: Uint<32>
+    ): Bool {
+        let currentNonce: Uint<32> = txNonce.get();
+        if (currentNonce != expectedNonce) return false;
+
+        let bal: Uint<64> = balance.get();
+        if (bal < amount) return false;
+
+        let status: Uint<8> = accountStatus.get();
+        return status == 0; // Must be active
+    }
+
+    public withdraw(amount: Uint<64>, expectedNonce: Uint<32>): Void {
+        assert(authorizeWithdrawal(amount, expectedNonce));
+
+        // Update private state
+        balance.set(balance.get() - amount);
+        txNonce.set(expectedNonce + 1);
+
+        // Update public aggregate
+        totalDeposits.set(totalDeposits.get() - amount);
+    }
+
+    // =========================================================================
+    // TRANSFER (private-to-private, via commitment scheme)
+    // =========================================================================
+
+    circuit canTransfer(amount: Uint<64>): Bool {
+        let bal: Uint<64> = balance.get();
+        let status: Uint<8> = accountStatus.get();
+        return (bal >= amount) && (status == 0);
+    }
+
+    public sendTransfer(
+        amount: Uint<64>,
+        recipientCommitment: Field,
+        expectedNonce: Uint<32>
+    ): Void {
+        assert(canTransfer(amount));
+        assert(txNonce.get() == expectedNonce);
+
+        // Deduct from sender (private state update)
+        balance.set(balance.get() - amount);
+        txNonce.set(expectedNonce + 1);
+
+        // The recipient would call a separate function to claim,
+        // proving they know the secret behind recipientCommitment
+    }
+
+    // =========================================================================
+    // STATE MACHINE: Account Status Transitions
+    // =========================================================================
+
+    circuit canChangeStatus(from: Uint<8>, to: Uint<8>): Bool {
+        let current: Uint<8> = accountStatus.get();
+        if (current != from) return false;
+        // Active->Frozen, Frozen->Active, Active->Closed
+        if (from == 0 && to == 1) return true;
+        if (from == 1 && to == 0) return true;
+        if (from == 0 && to == 2) return true;
+        return false;
+    }
+
+    public freezeAccount(): Void {
+        assert(canChangeStatus(0, 1));
+        accountStatus.set(1);
+        txNonce.set(txNonce.get() + 1);
+    }
+
+    public unfreezeAccount(): Void {
+        assert(canChangeStatus(1, 0));
+        accountStatus.set(0);
+        txNonce.set(txNonce.get() + 1);
+    }
+
+    public closeAccount(): Void {
+        assert(canChangeStatus(0, 2));
+        // Must withdraw all funds before closing
+        assert(balance.get() == 0);
+        accountStatus.set(2);
+        txNonce.set(txNonce.get() + 1);
+    }
+
+    // =========================================================================
+    // CONDITIONAL DISCLOSURE
+    // =========================================================================
+
+    // Only disclose balance if user opts in (stored in metadata)
+    circuit isActive(): Bool {
+        return accountStatus.get() == 0;
+    }
+
+    circuit hasSufficientBalance(minimum: Uint<64>): Bool {
+        return balance.get() >= minimum;
+    }
+
+    circuit getCurrentNonce(): Uint<32> {
+        return txNonce.get();
+    }
+
+    // Full disclosure for compliance/audit scenarios
+    public auditReveal(): Void {
+        let status: Uint<8> = accountStatus.get();
+        assert(status == 0 || status == 2); // Only active or closed
+
+        disclose(balance.get());
+        disclose(accountStatus.get());
+        disclose(txNonce.get());
+    }
+
+    // =========================================================================
+    // METADATA MANAGEMENT (off-chain data commitment)
+    // =========================================================================
+
+    public updateMetadata(
+        newCommitment: Field,
+        expectedNonce: Uint<32>
+    ): Void {
+        assert(txNonce.get() == expectedNonce);
+        assert(accountStatus.get() == 0);
+
+        metadataCommitment.set(newCommitment);
+        txNonce.set(expectedNonce + 1);
+    }
+
+    circuit verifyMetadata(
+        encryptedData: Bytes<256>,
+        encryptionKey: Field
+    ): Bool {
+        let computed: Field = pedersenHash(encryptedData, encryptionKey);
+        return computed == metadataCommitment.get();
+    }
+}
