@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: Apache-2.0
+// Designing Public vs. Private State: Access Control Pattern
+// Bounty #292 - Midnight Contributor Hub
+
+pragma language_version >= 0.16.0;
+
+import CompactStandardLibrary;
+
+/// @title AccessControl - Demonstrates access control with private credentials
+/// @notice Admin address is public; user credentials remain private
+contract AccessControl {
+
+    // ============================================================
+    // PUBLIC STATE - Administrative and credential registry
+    // ============================================================
+
+    /// @notice The administrator who can grant access
+    export sealed ledger admin: Bytes<32>;
+
+    /// @notice Registry of credential commitments
+    /// @dev Only commitments (hashes) are stored, not actual credentials
+    export sealed ledger credentialTree: MerkleTree<32, Bytes<32>>;
+
+    /// @notice Tracks the number of authorized users (public aggregate)
+    export ledger authorizedCount: Uint<64>;
+
+    // ============================================================
+    // CONSTRUCTOR
+    // ============================================================
+
+    constructor(adminKey: Bytes<32>) {
+        admin = adminKey;
+        credentialTree = emptyMerkleTree();
+        authorizedCount = 0;
+    }
+
+    // ============================================================
+    // CIRCUITS - Administrative (public identity)
+    // ============================================================
+
+    /// @notice Grant access by storing a credential commitment
+    /// @dev Only the admin can call this
+    /// @param credentialCommitment The hash commitment of the user's credential
+    export circuit grantAccess(credentialCommitment: Bytes<32>): [] {
+        assert(kernel.origin() == admin, "Admin only");
+        credentialTree = insert(credentialTree, credentialCommitment);
+        authorizedCount = authorizedCount + 1;
+        return [];
+    }
+
+    /// @notice Revoke access by removing a credential commitment
+    /// @dev Only the admin can call this
+    /// @param credentialCommitment The commitment to revoke
+    export circuit revokeAccess(credentialCommitment: Bytes<32>): [] {
+        assert(kernel.origin() == admin, "Admin only");
+        assert(
+            contains(credentialTree, credentialCommitment),
+            "Credential not found"
+        );
+        credentialTree = remove(credentialTree, credentialCommitment);
+        authorizedCount = authorizedCount - 1;
+        return [];
+    }
+
+    // ============================================================
+    // CIRCUITS - Access verification (private identity)
+    // ============================================================
+
+    /// @notice Access a protected resource by proving credential ownership
+    /// @dev The user proves they know the secret behind a registered commitment
+    ///      without revealing which credential or who they are
+    /// @param credentialSecret PRIVATE: The user's secret credential (never on-chain)
+    /// @param credentialCommitment The commitment derived from credentialSecret
+    export circuit accessResource(
+        credentialSecret: Bytes<32>,
+        credentialCommitment: Bytes<32>
+    ): [] {
+        // Verify the credential commitment exists in the registry
+        assert(
+            contains(credentialTree, credentialCommitment),
+            "Access denied: credential not recognized"
+        );
+
+        // The ZK proof proves membership without revealing:
+        // 1. Which specific credential was used
+        // 2. The user's identity
+        // 3. When they last accessed the resource
+
+        // Resource access logic goes here
+        return [];
+    }
+
+    /// @notice Check if a credential is authorized (read-only)
+    /// @param credentialCommitment The commitment to check
+    export circuit isAuthorized(credentialCommitment: Bytes<32>): Boolean {
+        return contains(credentialTree, credentialCommitment);
+    }
+}

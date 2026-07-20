@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: Apache-2.0
+// Designing Public vs. Private State: Private Token Pattern
+// Bounty #292 - Midnight Contributor Hub
+
+pragma language_version >= 0.16.0;
+
+import CompactStandardLibrary;
+
+/// @title PrivateToken - Demonstrates private balances with public metadata
+/// @notice Token metadata is public; ownership and amounts are private
+contract PrivateToken {
+
+    // ============================================================
+    // PUBLIC STATE - Token metadata visible on-chain
+    // ============================================================
+
+    /// @notice The token's display name
+    export sealed ledger tokenName: Bytes<32>;
+
+    /// @notice Total supply of the token
+    export sealed ledger totalSupply: Uint<128>;
+
+    /// @notice The authority allowed to mint new tokens
+    export sealed ledger mintingAuthority: Bytes<32>;
+
+    // ============================================================
+    // PUBLIC STATE - Coin registry (required by UTXO model)
+    // ============================================================
+
+    /// @notice Merkle tree of all active shielded coins
+    /// @dev The tree structure is public, but coin values and owners are hidden
+    export sealed ledger activeCoins: MerkleTree<32, QualifiedShieldedCoinInfo>;
+
+    // ============================================================
+    // CONSTRUCTOR
+    // ============================================================
+
+    constructor(
+        name: Bytes<32>,
+        supply: Uint<128>,
+        authority: Bytes<32>
+    ) {
+        tokenName = name;
+        totalSupply = supply;
+        mintingAuthority = authority;
+        activeCoins = emptyMerkleTree();
+    }
+
+    // ============================================================
+    // CIRCUITS
+    // ============================================================
+
+    /// @notice Mint new tokens to a recipient
+    /// @dev Only the minting authority can call this
+    /// @param recipient The public key of the recipient (visible, but amount is hidden)
+    /// @param amount PRIVATE: The amount to mint (hidden in the shielded coin)
+    export circuit mint(
+        recipient: ZswapCoinPublicKey,
+        amount: Uint<128>
+    ): [] {
+        assert(kernel.minter() == some(mintingAuthority), "Not authorized to mint");
+
+        // Create a new shielded coin
+        const newCoin: ShieldedCoinInfo = {
+            nonce: generateNonce(),
+            color: some(selfColor()),
+            value: amount
+        };
+
+        // Send the coin to the recipient privately
+        sendShielded(recipient, newCoin);
+
+        // Register the coin in the public Merkle tree
+        activeCoins = insert(
+            activeCoins,
+            writeCoin(newCoin, right(kernel.self()))
+        );
+
+        return [];
+    }
+
+    /// @notice Transfer tokens between users
+    /// @dev Both sender and recipient amounts remain private
+    /// @param senderCoin PRIVATE: The coin being spent
+    /// @param recipientCoin PRIVATE: The new coin for the recipient
+    /// @param changeCoin PRIVATE: Change returned to the sender
+    export circuit transfer(
+        senderCoin: ShieldedCoinInfo,
+        recipient: ZswapCoinPublicKey,
+        recipientAmount: Uint<128>,
+        changeAmount: Uint<128>
+    ): [] {
+        // Verify the sender has sufficient funds
+        assert(
+            senderCoin.value >= recipientAmount + changeAmount,
+            "Insufficient balance"
+        );
+
+        // Consume the sender's coin
+        receiveShielded(senderCoin);
+
+        // Create recipient's coin
+        const recipientCoin: ShieldedCoinInfo = {
+            nonce: generateNonce(),
+            color: senderCoin.color,
+            value: recipientAmount
+        };
+        sendShielded(recipient, recipientCoin);
+
+        // Create change coin for sender (if any)
+        if (changeAmount > 0) {
+            const changeCoin: ShieldedCoinInfo = {
+                nonce: generateNonce(),
+                color: senderCoin.color,
+                value: changeAmount
+            };
+            sendShielded(kernel.origin(), changeCoin);
+        }
+
+        return [];
+    }
+}
