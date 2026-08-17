@@ -102,6 +102,15 @@ For non-code contributions (e.g., docs, proposals), submit via issues. All PRs r
   4. Copy and fill out the [submission template](./events/README.md). It works for projects, tutorials, threads, or any other type of contribution.  
   5. Commit and open a Pull Request.
 
-  Once your PR is merged, your submission will appear in the event’s showcase page automatically.
+   5. **Submitting a Tutorial for the Building Decentralized Identity (DIDs) with Midnight Bounty:**
+  106| 
+  107|      - Navigate to the `/events` folder.
+  108|      - Open the folder for the relevant event (e.g., `events/hacktoberfest-2025/`).
+  109|      - Inside, create a new Markdown file named after your handle or team: `events/<event-slug>/<your-handle-or-team-slug>.md`
+  110|      - Copy and fill out the [submission template](./events/README.md). Ensure the `content-type` is set to `Technical Tutorial` and the `related bounty issue` links to [#228].
+  111|      - Commit and open a Pull Request.
+  112| 
+  113|      Once your PR is merged, your submission will appear in the event’s showcase page automatically.
+  114| 
 
 > **Tip:** Keep filenames lowercase and hyphenated, and make sure your front-matter fields match the example format.  
