@@ -36,7 +36,7 @@ We run content and development bounties rewarded in NIGHT tokens. All participan
 
 - **[Bounty Program Terms](legal/BOUNTY_TERMS.md):** Standard terms for all bounty participants.
 - **[Contributor Agreement](legal/CONTRIBUTOR_AGREEMENT.md):** Additional terms for premium-tier engagements.
-- **[Submit a Bounty](../../issues/new?template=content-bounty.yml):** Use the Content Bounty issue template to submit your work.
+- **[Submit a Tutorial](../../issues/new?template=tutorial-private-nft-marketplace.yml):** Use the Tutorial issue template to submit your work.
 
 ## ⚖️ Governance & Security
 
